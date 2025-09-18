@@ -18,7 +18,8 @@
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed",
     "db:console:local": "wrangler d1 execute cotton-bags-billing --local",
     "db:console:prod": "wrangler d1 execute cotton-bags-billing",
-    "git:commit": "git add . && git commit -m"
+    "git:commit": "git add . && git commit -m",
+    "db:truncate:local": "wrangler d1 execute cotton-bags-billing --local --file=./truncate.sql"
   },
   "dependencies": {
     "hono": "^4.9.7"

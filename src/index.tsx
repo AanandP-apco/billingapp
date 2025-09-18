@@ -495,7 +495,7 @@ app.get('/', (c) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Cotton Bags Billing System</title>
+        <title>Sai Connect (Eco Bags) Billing System</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
         <link href="/static/style.css" rel="stylesheet">
@@ -506,7 +506,7 @@ app.get('/', (c) => {
                 <div class="container mx-auto flex items-center justify-between">
                     <h1 class="text-xl font-bold">
                         <i class="fas fa-shopping-bag mr-2"></i>
-                        Cotton Bags Billing System
+                        Sai Connect (Eco Bags) Billing System
                     </h1>
                     <div class="flex space-x-4">
                         <button onclick="showDashboard()" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400">
@@ -775,11 +775,10 @@ app.get('/download/invoice/:id', async (c) => {
         <div style="display: flex; align-items: center;">
           <img src="/static/logo.png" style="width: 80px; margin-right: 20px;" />
           <div>
-            <strong>Cotton Bags Pvt Ltd</strong><br/>
-            123 Market Road, City, State, 123456<br/>
-            Phone: +91-9876543210<br/>
-            Email: info@cottonbags.com<br/>
-            GSTIN: 27ABCDE1234F1Z5
+            <strong>Sai Connect (Eco Bags)</strong><br/>
+            No.3, 3rd Street, Sundaram Colony, West Tambaram, Chennai - 600045<br/>
+            Phone: +91-9791119969<br/>
+            Email: a.vinothini@gmail.com<br/>
           </div>
         </div>
         <h2 style="text-align: center;">Invoice #${invoice.invoice_number}</h2>

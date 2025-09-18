@@ -1,0 +1,10 @@
+PRAGMA foreign_keys = OFF;
+BEGIN TRANSACTION;
+DELETE FROM invoice_items;
+DELETE FROM payments;
+DELETE FROM invoices;
+DELETE FROM products;
+DELETE FROM customers;
+DELETE FROM sqlite_sequence WHERE name IN ('invoice_items','payments','invoices','products','customers');
+COMMIT;
+PRAGMA foreign_keys = ON;
