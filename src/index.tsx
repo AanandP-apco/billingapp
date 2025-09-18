@@ -33,6 +33,255 @@ async function generateInvoiceNumber(c: any): Promise<string> {
   return `INV-${year}-${month}-${seq}`;
 }
 
+type InvoiceTemplateItem = {
+  productName: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+};
+
+type InvoiceTemplateOptions = {
+  showPrintButton?: boolean;
+  isPdf?: boolean;
+  includeLogo?: boolean;
+};
+
+function formatCurrency(value: number | string | null | undefined): string {
+  const numeric = Number(value ?? 0);
+  return `&#8377;${numeric.toFixed(2)}`;
+}
+
+function numberToWordsIndian(amount: number): string {
+  const numeric = Number.isFinite(amount) ? Number(amount) : 0;
+  const safeAmount = Math.max(0, numeric);
+  const ones = [
+    'Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+    'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'
+  ];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const convertWhole = (num: number): string => {
+    if (num === 0) {
+      return 'Zero';
+    }
+
+    const segments = [
+      { value: 10000000, label: 'Crore' },
+      { value: 100000, label: 'Lakh' },
+      { value: 1000, label: 'Thousand' },
+      { value: 100, label: 'Hundred' }
+    ];
+
+    const parts: string[] = [];
+    let remaining = Math.floor(num);
+
+    for (const segment of segments) {
+      if (remaining >= segment.value) {
+        const count = Math.floor(remaining / segment.value);
+        parts.push(`${convertWhole(count)} ${segment.label}`);
+        remaining %= segment.value;
+      }
+    }
+
+    if (remaining > 0) {
+      if (parts.length > 0 && remaining < 100) {
+        parts.push('and');
+      }
+
+      if (remaining < 20) {
+        parts.push(ones[remaining]);
+      } else {
+        const ten = Math.floor(remaining / 10);
+        const unit = remaining % 10;
+        const tenWord = tens[ten];
+        parts.push(unit ? `${tenWord}-${ones[unit]}` : tenWord);
+      }
+    }
+
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  };
+
+  const [rupeesPart, paisePart] = safeAmount.toFixed(2).split('.');
+  const rupees = parseInt(rupeesPart, 10);
+  const paise = parseInt(paisePart, 10);
+
+  let result = `Rupees ${convertWhole(rupees)}`;
+
+  if (paise > 0) {
+    result += ` and ${convertWhole(paise)} Paise`;
+  }
+
+  return `${result} Only`;
+}
+
+function buildInvoiceHtml(invoice: any, items: InvoiceTemplateItem[], company: any, options: InvoiceTemplateOptions = {}): string {
+  const showPrintButton = options.showPrintButton ?? true;
+  const bodyClass = options.isPdf ? 'pdf' : 'screen';
+  const addressLine = [invoice.address, invoice.city, invoice.state, invoice.pincode].filter(Boolean).join(', ');
+  const contactLine = [
+    invoice.phone ? `Phone: ${invoice.phone}` : '',
+    invoice.email ? `Email: ${invoice.email}` : ''
+  ].filter(Boolean).join(' | ');
+  const gstLine = invoice.gst_number ? `GSTIN: ${invoice.gst_number}` : '';
+  const customerLines = [addressLine, contactLine, gstLine].filter(Boolean);
+  const customerDetailsHtml = customerLines.length ? customerLines.join('<br/>') : '';
+  const amountInWords = numberToWordsIndian(Number(invoice.total_amount ?? 0));
+  const notesHtml = invoice.notes ? `<div class="notes"><strong>Notes:</strong> ${invoice.notes}</div>` : '';
+  const includeLogo = options.includeLogo ?? true;
+  const logoHtml = includeLogo && company.logo ? `<img src="${company.logo}" class="logo" alt="Logo"/>` : '';
+  const containerMaxWidth = options.isPdf ? '190mm' : '186mm';
+  const containerMargin = options.isPdf ? '12mm auto' : '24px auto';
+  const containerPadding = options.isPdf ? '10mm 12mm' : '12mm';
+  const subtotalValue = Number(invoice.subtotal ?? 0);
+  const discountNumeric = Number(invoice.discount_amount ?? 0);
+  const discountTypeLabel = invoice.discount_type === 'percent'
+    ? `Discount (${Number(invoice.discount_value ?? 0).toFixed(2)}%)`
+    : 'Discount';
+  const itemRows = items.length
+    ? items.map(item => `
+            <tr>
+              <td>${item.productName || ''}</td>
+              <td>${item.description || ''}</td>
+              <td>${item.quantity}</td>
+              <td>${formatCurrency(item.unitPrice)}</td>
+              <td>${formatCurrency(item.lineTotal)}</td>
+            </tr>
+          `).join('')
+    : '<tr><td colspan="5" class="no-items">No line items</td></tr>';
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Invoice #${invoice.invoice_number}</title>
+  <style>
+    @page { size: A4; margin: 12mm; }
+    body { font-family: Arial, sans-serif; margin: 0; color: #111; background: #fff; }
+    body.screen { background: #f5f5f5; }
+    body.pdf { background: #fff; width: 210mm; min-height: 297mm; margin: 0 auto; }
+    .invoice-container { background: #fff; width: 100%; max-width: ${containerMaxWidth}; margin: ${containerMargin}; padding: ${containerPadding}; box-sizing: border-box; }
+    body.screen .invoice-container { box-shadow: 0 0 12px rgba(0, 0, 0, 0.08); }
+    body.pdf .invoice-container { box-shadow: none; }
+    .header { display: flex; align-items: flex-start; gap: 16px; }
+    .logo { width: 80px; height: auto; display: block; }
+    .company-details { font-size: 1.05em; line-height: 1.4; }
+    .company-details strong { font-size: 1.15em; }
+    .invoice-title { font-size: 1.8em; margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; table-layout: fixed; }
+    th, td { border: 1px solid #ccc; padding: 8px; font-size: 0.95em; vertical-align: top; }
+    th { background: #f1f1f1; }
+    td:nth-child(2) { white-space: pre-wrap; word-break: break-word; }
+    th:nth-child(3), td:nth-child(3) { text-align: center; }
+    th:nth-child(4), th:nth-child(5), td:nth-child(4), td:nth-child(5) { text-align: right; white-space: nowrap; }
+    colgroup col:nth-child(1) { width: 26%; }
+    colgroup col:nth-child(2) { width: 38%; }
+    colgroup col:nth-child(3) { width: 10%; }
+    colgroup col:nth-child(4) { width: 13%; }
+    colgroup col:nth-child(5) { width: 13%; }
+    .totals { text-align: right; margin-top: 16px; }
+    .totals p { margin: 4px 0; }
+    .amount-words { margin-top: 12px; font-style: italic; }
+    .notes { margin-top: 12px; }
+    .print-action { margin-top: 20px; text-align: right; }
+    .print-action button { background: #2c7be5; color: #fff; border: none; padding: 10px 18px; border-radius: 4px; font-size: 1em; cursor: pointer; }
+    .print-action button:hover { background: #1a5fbe; }
+    .no-items { text-align: center; font-style: italic; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr, td, th { page-break-inside: avoid; }
+    @media print {
+      body { background: #fff; }
+      .invoice-container { margin: 0 auto; box-shadow: none; }
+      .print-action { display: none; }
+    }
+  </style>
+</head>
+<body class="${bodyClass}">
+  <div class="invoice-container">
+    <div class="header">
+      ${logoHtml}
+      <div class="company-details">
+        <strong>${company.name}</strong><br/>
+        ${company.address}<br/>
+        ${company.phone ? `Phone: ${company.phone}<br/>` : ''}
+        ${company.email ? `Email: ${company.email}<br/>` : ''}
+        ${company.gst ? `GSTIN: ${company.gst}<br/>` : ''}
+      </div>
+    </div>
+    <div class="invoice-title">Invoice #${invoice.invoice_number}</div>
+    <div><strong>Date:</strong> ${invoice.invoice_date}</div>
+    <div class="customer" style="margin-top: 10px;">
+      <strong>Customer:</strong> ${invoice.customer_name}${invoice.business_name ? ` (${invoice.business_name})` : ''}
+      ${customerDetailsHtml ? `<div>${customerDetailsHtml}</div>` : ''}
+    </div>
+    <table>
+      <colgroup>
+        <col />
+        <col />
+        <col />
+        <col />
+        <col />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Description</th>
+          <th>Qty</th>
+          <th>Unit Price</th>
+          <th>Line Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemRows}
+      </tbody>
+    </table>
+    <div class="totals">
+      <p>Subtotal: ${formatCurrency(subtotalValue)}</p>
+      ${discountNumeric > 0 ? `<p>${discountTypeLabel}: -${formatCurrency(discountNumeric)}</p>` : ''}
+      <p><strong>Total: ${formatCurrency(invoice.total_amount)}</strong></p>
+    </div>
+    <div class="amount-words"><strong>Amount in Words:</strong> ${amountInWords}</div>
+    ${notesHtml}
+    ${showPrintButton ? '<div class="print-action"><button type="button" onclick="window.print()">Print</button></div>' : ''}
+  </div>
+</body>
+</html>`;
+}
+
+type DiscountType = 'none' | 'amount' | 'percent';
+
+function calculateDiscount(subtotalInput: number, typeInput?: string, valueInput?: number) {
+  const subtotal = Number.isFinite(subtotalInput) ? Number(subtotalInput) : 0;
+  const normalizedSubtotal = subtotal > 0 ? subtotal : 0;
+  const rawType = (typeInput || '').toLowerCase();
+  const discountType: DiscountType = rawType === 'percent' ? 'percent' : rawType === 'amount' ? 'amount' : 'none';
+  let discountValue = Number(valueInput ?? 0);
+  if (!Number.isFinite(discountValue)) {
+    discountValue = 0;
+  }
+  let discountAmount = 0;
+  if (discountType === 'percent') {
+    const percent = Math.min(Math.max(discountValue, 0), 100);
+    discountValue = percent;
+    discountAmount = Number((normalizedSubtotal * percent / 100).toFixed(2));
+  } else if (discountType === 'amount') {
+    const absolute = Math.min(Math.max(discountValue, 0), normalizedSubtotal);
+    discountValue = absolute;
+    discountAmount = Number(absolute.toFixed(2));
+  } else {
+    discountValue = 0;
+  }
+  const totalAmount = Number((normalizedSubtotal - discountAmount).toFixed(2));
+  return {
+    subtotal: normalizedSubtotal,
+    discountAmount,
+    discountType,
+    discountValue,
+    totalAmount
+  };
+}
+
 // API Routes for Customers
 app.get('/api/customers', async (c) => {
   try {
@@ -256,44 +505,81 @@ app.get('/api/invoices', async (c) => {
 app.post('/api/invoices', async (c) => {
   try {
     const invoiceData = await c.req.json();
-    const invoiceNumber = await generateInvoiceNumber(c); // note await
-    
-    // Insert invoice
+    const invoiceNumber = await generateInvoiceNumber(c);
+
+    const rawItems = Array.isArray(invoiceData.items) ? invoiceData.items : [];
+    const sanitizedItems: any[] = [];
+    let subtotal = 0;
+
+    for (const raw of rawItems) {
+      const productId = Number(raw?.product_id);
+      const quantity = Number(raw?.quantity);
+      const unitPrice = Number(raw?.unit_price);
+      if (!productId || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+        continue;
+      }
+      const normalizedUnitPrice = Number(unitPrice.toFixed(2));
+      const normalizedQuantity = Number(quantity.toFixed(2));
+      const lineTotal = Number((normalizedQuantity * normalizedUnitPrice).toFixed(2));
+      subtotal += lineTotal;
+      sanitizedItems.push({
+        product_id: productId,
+        quantity: normalizedQuantity,
+        unit_price: normalizedUnitPrice,
+        line_total: lineTotal,
+        description: raw?.description ? String(raw.description) : null
+      });
+    }
+
+    if (sanitizedItems.length === 0) {
+      return c.json({ error: 'Invoice requires at least one item' }, 400);
+    }
+
+    const discountInfo = calculateDiscount(subtotal, invoiceData.discount_type, invoiceData.discount_value);
+    const notes = invoiceData.notes ? String(invoiceData.notes) : null;
+
     const { results: invoiceResults } = await c.env.DB.prepare(`
-      INSERT INTO invoices (invoice_number, customer_id, invoice_date, due_date, subtotal, discount_amount, total_amount, balance_amount, status, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO invoices (invoice_number, customer_id, invoice_date, due_date, subtotal, discount_amount, discount_type, discount_value, total_amount, balance_amount, status, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
     `).bind(
       invoiceNumber,
-      invoiceData.customer_id,
+      Number(invoiceData.customer_id),
       invoiceData.invoice_date,
       invoiceData.due_date || null,
-      invoiceData.subtotal,
-      invoiceData.discount_amount || 0,
-      invoiceData.total_amount,
-      invoiceData.total_amount, // Initial balance equals total
+      discountInfo.subtotal,
+      discountInfo.discountAmount,
+      discountInfo.discountType,
+      discountInfo.discountValue,
+      discountInfo.totalAmount,
+      discountInfo.totalAmount,
       'pending',
-      invoiceData.notes || null
+      notes
     ).all();
 
     const invoice = invoiceResults[0];
 
-    // Insert invoice items
-    if (invoiceData.items && invoiceData.items.length > 0) {
-      for (const item of invoiceData.items) {
-        await c.env.DB.prepare(`
-          INSERT INTO invoice_items (invoice_id, product_id, quantity, unit_price, line_total, description)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(
-          invoice.id,
-          item.product_id,
-          item.quantity,
-          item.unit_price,
-          item.line_total,
-          item.description || null
-        ).run();
-      }
+    for (const item of sanitizedItems) {
+      await c.env.DB.prepare(`
+        INSERT INTO invoice_items (invoice_id, product_id, quantity, unit_price, line_total, description)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(
+        invoice.id,
+        item.product_id,
+        item.quantity,
+        item.unit_price,
+        item.line_total,
+        item.description
+      ).run();
     }
+
+    invoice.items = sanitizedItems;
+    invoice.subtotal = discountInfo.subtotal;
+    invoice.discount_amount = discountInfo.discountAmount;
+    invoice.discount_type = discountInfo.discountType;
+    invoice.discount_value = discountInfo.discountValue;
+    invoice.total_amount = discountInfo.totalAmount;
+    invoice.balance_amount = discountInfo.totalAmount;
 
     return c.json(invoice);
   } catch (error) {
@@ -341,22 +627,64 @@ app.get('/api/invoices/:id', async (c) => {
 app.put('/api/invoices/:id', async (c) => {
   const id = c.req.param('id');
   try {
-    const invoice = await c.req.json();
+    const invoiceData = await c.req.json();
+
+    let subtotal = Number(invoiceData.subtotal ?? 0);
+    let sanitizedItems: any[] | null = null;
+
+    if (Array.isArray(invoiceData.items)) {
+      sanitizedItems = [];
+      subtotal = 0;
+      for (const raw of invoiceData.items) {
+        const productId = Number(raw?.product_id);
+        const quantity = Number(raw?.quantity);
+        const unitPrice = Number(raw?.unit_price);
+        if (!productId || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+          continue;
+        }
+        const normalizedUnitPrice = Number(unitPrice.toFixed(2));
+        const normalizedQuantity = Number(quantity.toFixed(2));
+        const lineTotal = Number((normalizedQuantity * normalizedUnitPrice).toFixed(2));
+        subtotal += lineTotal;
+        sanitizedItems.push({
+          product_id: productId,
+          quantity: normalizedQuantity,
+          unit_price: normalizedUnitPrice,
+          line_total: lineTotal,
+          description: raw?.description ? String(raw.description) : null
+        });
+      }
+      if (sanitizedItems.length === 0) {
+        return c.json({ error: 'Invoice requires at least one item' }, 400);
+      }
+    }
+
+    const discountInfo = calculateDiscount(subtotal, invoiceData.discount_type, invoiceData.discount_value);
+    const notes = invoiceData.notes ? String(invoiceData.notes) : null;
+    const balanceFromPayload = Number(invoiceData.balance_amount);
+    const paidAmount = Number(invoiceData.paid_amount ?? 0);
+    const balanceAmount = Number.isFinite(balanceFromPayload)
+      ? Number(balanceFromPayload.toFixed(2))
+      : Number((discountInfo.totalAmount - paidAmount).toFixed(2));
+    const status = invoiceData.status || (balanceAmount <= 0 ? 'paid' : 'pending');
+
     const { results } = await c.env.DB.prepare(`
       UPDATE invoices 
-      SET customer_id = ?, invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?, total_amount = ?, balance_amount = ?, status = ?, notes = ?
+      SET customer_id = ?, invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?, discount_type = ?, discount_value = ?, total_amount = ?, balance_amount = ?, status = ?, notes = ?
       WHERE id = ?
       RETURNING *
     `).bind(
-      invoice.customer_id,
-      invoice.invoice_date,
-      invoice.due_date || null,
-      invoice.subtotal,
-      invoice.discount_amount || 0,
-      invoice.total_amount,
-      invoice.balance_amount ?? invoice.total_amount - (invoice.paid_amount ?? 0),
-      invoice.status || 'pending',
-      invoice.notes || null,
+      Number(invoiceData.customer_id),
+      invoiceData.invoice_date,
+      invoiceData.due_date || null,
+      discountInfo.subtotal,
+      discountInfo.discountAmount,
+      discountInfo.discountType,
+      discountInfo.discountValue,
+      discountInfo.totalAmount,
+      balanceAmount,
+      status,
+      notes,
       id
     ).all();
 
@@ -364,10 +692,9 @@ app.put('/api/invoices/:id', async (c) => {
       return c.json({ error: 'Invoice not found' }, 404);
     }
 
-    // Update invoice items if provided
-    if (Array.isArray(invoice.items)) {
+    if (Array.isArray(invoiceData.items) && sanitizedItems) {
       await c.env.DB.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').bind(id).run();
-      for (const item of invoice.items) {
+      for (const item of sanitizedItems) {
         await c.env.DB.prepare(`
           INSERT INTO invoice_items (invoice_id, product_id, quantity, unit_price, line_total, description)
           VALUES (?, ?, ?, ?, ?, ?)
@@ -377,12 +704,20 @@ app.put('/api/invoices/:id', async (c) => {
           item.quantity,
           item.unit_price,
           item.line_total,
-          item.description || null
+          item.description
         ).run();
       }
     }
 
-    return c.json(results[0]);
+    const updatedInvoice = results[0];
+    updatedInvoice.subtotal = discountInfo.subtotal;
+    updatedInvoice.discount_amount = discountInfo.discountAmount;
+    updatedInvoice.discount_type = discountInfo.discountType;
+    updatedInvoice.discount_value = discountInfo.discountValue;
+    updatedInvoice.total_amount = discountInfo.totalAmount;
+    updatedInvoice.balance_amount = balanceAmount;
+
+    return c.json(updatedInvoice);
   } catch (error) {
     console.error('Error updating invoice:', error);
     return c.json({ error: 'Failed to update invoice' }, 500);
@@ -548,7 +883,6 @@ app.get('/', (c) => {
 app.get('/print/invoice/:id', async (c) => {
   const id = c.req.param('id');
   try {
-    // Fetch invoice header and items for print view
     const { results: invoiceResults } = await c.env.DB.prepare(`
       SELECT i.*, c.name as customer_name, c.business_name, c.address, c.city, c.state, c.pincode, c.phone, c.email, c.gst_number
       FROM invoices i
@@ -557,7 +891,7 @@ app.get('/print/invoice/:id', async (c) => {
     `).bind(id).all();
 
     if (invoiceResults.length === 0) {
-      return c.html('<h2>Invoice not found</h2>', 404);
+      return c.json({ error: 'Invoice not found' }, 404);
     }
 
     const invoice = invoiceResults[0];
@@ -569,172 +903,30 @@ app.get('/print/invoice/:id', async (c) => {
       WHERE ii.invoice_id = ?
       ORDER BY ii.id
     `).bind(id).all();
-    // Fetch invoice, customer, and items as before...
-    // (see previous answer for SQL queries)
 
-    // Assume invoice, itemResults are fetched as before
-    // Add your company details here
     const company = {
-      name: "Sai Connect",
-      address: "No.3, 3rd Street, Sundaram Colony, West Tambaram, Chennai 600045",
-      phone: "+91-9791119969",
-      email: "info@cottonbags.com",
-      gst: "",
-      logo: "/static/logo.png"
+      name: 'Sai Connect',
+      address: 'No.3, 3rd Street, Sundaram Colony, West Tambaram, Chennai 600045',
+      phone: '+91-9791119969',
+      email: 'a.vinothini@gmail.com',
+      gst: '',
+      logo: '/static/logo.png'
     };
 
-    let itemsHtml = itemResults.map(item => `
-      <tr>
-        <td>${item.product_name}</td>
-        <td>${item.description || ""}</td>
-        <td>${item.quantity}</td>
-        <td>₹${item.unit_price.toFixed(2)}</td>
-        <td>₹${item.line_total.toFixed(2)}</td>
-      </tr>
-    `).join('');
-
-    const itemsHtmlFixed = itemResults.map((item: any) => `
-      <tr>
-        <td>${item.product_name || ''}</td>
-        <td>${item.description || item.product_description || ''}</td>
-        <td>${item.quantity}</td>
-        <td>&#8377;${Number(item.unit_price).toFixed(2)}</td>
-        <td>&#8377;${Number(item.line_total).toFixed(2)}</td>
-      </tr>
-    `).join('');
+    const items: InvoiceTemplateItem[] = itemResults.map((item: any) => ({
+      productName: item.product_name || '',
+      description: item.description || item.product_description || '',
+      quantity: Number(item.quantity) || 0,
+      unitPrice: Number(item.unit_price) || 0,
+      lineTotal: Number(item.line_total) || 0
+    }));
 
     const embed = c.req.query('embed');
     const isEmbed = embed === '1' || embed === 'true';
 
-    return c.html(`
-      <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>Invoice #${invoice.invoice_number}</title>
-        <style>
-          @page { size: A4; margin: 12mm; }
-          body { font-family: Arial, sans-serif; margin: 12mm; }
-          .header { display: flex; align-items: center; }
-          .logo { width: 80px; margin-right: 20px; }
-          .company-details { font-size: 1.1em; }
-          .invoice-title { font-size: 2em; margin-top: 20px; }
-          table { border-collapse: collapse; width: 100%; margin-top: 20px; table-layout: fixed; }
-          th, td { border: 1px solid #ccc; padding: 8px; }
-          th { background: #eee; }
-          th:nth-child(1){width:28%}
-          th:nth-child(2){width:42%}
-          th:nth-child(3){width:10%}
-          th:nth-child(4), th:nth-child(5){width:10%}
-          td{word-wrap:break-word}
-          .totals { text-align: right; font-size: 1.1em; }
-          .no-print { margin-top: 16px; }
-          thead { display: table-header-group; }
-          tfoot { display: table-footer-group; }
-          tr, td, th { page-break-inside: avoid; }
-          @media print { .no-print { display: none; } body { margin: 0; } }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <img src="${company.logo}" class="logo" alt="Logo"/>
-          <div class="company-details">
-            <strong>${company.name}</strong><br/>
-            ${company.address}<br/>
-            Phone: ${company.phone}<br/>
-            Email: ${company.email}<br/>
-          </div>
-        </div>
-        <div class="invoice-title">Invoice #${invoice.invoice_number}</div>
-        <p><strong>Date:</strong> ${invoice.invoice_date}</p>
-        <p><strong>Customer:</strong> ${invoice.customer_name}${invoice.business_name ? ` (${invoice.business_name})` : ''}<br/>
-        ${[invoice.address, invoice.city, invoice.state, invoice.pincode].filter(Boolean).join(', ')}<br/>
-        ${invoice.phone ? `Phone: ${invoice.phone} | ` : ''}${invoice.email ? `Email: ${invoice.email}` : ''}<br/>
-        ${invoice.gst_number ? `GSTIN: ${invoice.gst_number}` : ''}</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Description</th>
-              <th>Qty</th>
-              <th>Unit Price</th>
-              <th>Line Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemsHtmlFixed}
-          </tbody>
-        </table>
-        <div class="totals">
-          <p>Subtotal: &#8377;${Number(invoice.subtotal).toFixed(2)}</p>
-          <p>Discount: &#8377;${Number(invoice.discount_amount || 0).toFixed(2)}</p>
-          <p><strong>Total: &#8377;${Number(invoice.total_amount).toFixed(2)}</strong></p>
-        </div>
-        ${invoice.notes ? `<p><strong>Notes:</strong> ${invoice.notes}</p>` : ''}
-        ${isEmbed ? '' : '<button class="no-print" onclick="window.print()">Print</button>'}
-      </body>
-      </html>
-    `);
+    const html = buildInvoiceHtml(invoice, items, company, { showPrintButton: !isEmbed, isPdf: isEmbed, includeLogo: true });
 
-    return c.html(`
-      <html>
-      <head>
-        <title>Invoice #${invoice.invoice_number}</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 40px; }
-          .header { display: flex; align-items: center; }
-          .logo { width: 80px; margin-right: 20px; }
-          .company-details { font-size: 1.1em; }
-          .invoice-title { font-size: 2em; margin-top: 20px; }
-          table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-          th, td { border: 1px solid #ccc; padding: 8px; }
-          th { background: #eee; }
-          .totals { text-align: right; font-size: 1.1em; }
-          @media print {
-            .no-print { display: none; }
-            body { margin: 0; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <img src="${company.logo}" class="logo" alt="Logo"/>
-          <div class="company-details">
-            <strong>${company.name}</strong><br/>
-            ${company.address}<br/>
-            Phone: ${company.phone}<br/>
-            Email: ${company.email}<br/>
-          </div>
-        </div>
-        <div class="invoice-title">Invoice #${invoice.invoice_number}</div>
-        <p><strong>Date:</strong> ${invoice.invoice_date}</p>
-        <p><strong>Customer:</strong> ${invoice.customer_name} (${invoice.business_name})<br/>
-        ${invoice.address}, ${invoice.city}, ${invoice.state}, ${invoice.pincode}<br/>
-        Phone: ${invoice.phone} | Email: ${invoice.email}<br/>
-        GSTIN: ${invoice.gst_number}</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Description</th>
-              <th>Qty</th>
-              <th>Unit Price</th>
-              <th>Line Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemsHtml}
-          </tbody>
-        </table>
-        <div class="totals">
-          <p>Subtotal: ₹${invoice.subtotal.toFixed(2)}</p>
-          <p>Discount: ₹${invoice.discount_amount.toFixed(2)}</p>
-          <p><strong>Total: ₹${invoice.total_amount.toFixed(2)}</strong></p>
-        </div>
-        <p><strong>Notes:</strong> ${invoice.notes || ""}</p>
-        <button class="no-print" onclick="window.print()">Print</button>
-      </body>
-      </html>
-    `);
+    return c.html(html);
   } catch (error) {
     console.error('Error printing invoice:', error);
     return c.html('<h2>Error generating invoice print</h2>', 500);
@@ -745,20 +937,19 @@ app.get('/print/invoice/:id', async (c) => {
 app.get('/download/invoice/:id', async (c) => {
   const id = c.req.param('id');
   try {
-    // Fetch invoice and items as before
     const { results: invoiceResults } = await c.env.DB.prepare(`
       SELECT i.*, c.name as customer_name, c.business_name, c.address, c.city, c.state, c.pincode, c.phone, c.email, c.gst_number
       FROM invoices i
       LEFT JOIN customers c ON i.customer_id = c.id
       WHERE i.id = ?
     `).bind(id).all();
-    
+
     if (invoiceResults.length === 0) {
       return c.json({ error: 'Invoice not found' }, 404);
     }
-    
+
     const invoice = invoiceResults[0];
-    
+
     const { results: itemResults } = await c.env.DB.prepare(`
       SELECT ii.*, p.name as product_name, p.description as product_description
       FROM invoice_items ii
@@ -766,64 +957,40 @@ app.get('/download/invoice/:id', async (c) => {
       WHERE ii.invoice_id = ?
       ORDER BY ii.id
     `).bind(id).all();
-    
-    invoice.items = itemResults;
 
-    // Generate PDF using html2pdf
-    const html = `
-      <div style="font-family: Arial, sans-serif; margin: 40px;">
-        <div style="display: flex; align-items: center;">
-          <img src="/static/logo.png" style="width: 80px; margin-right: 20px;" />
-          <div>
-            <strong>Sai Connect (Eco Bags)</strong><br/>
-            No.3, 3rd Street, Sundaram Colony, West Tambaram, Chennai - 600045<br/>
-            Phone: +91-9791119969<br/>
-            Email: a.vinothini@gmail.com<br/>
-          </div>
-        </div>
-        <h2 style="text-align: center;">Invoice #${invoice.invoice_number}</h2>
-        <p><strong>Date:</strong> ${invoice.invoice_date}</p>
-        <p><strong>Customer:</strong> ${invoice.customer_name} (${invoice.business_name})<br/>
-        ${invoice.address}, ${invoice.city}, ${invoice.state}, ${invoice.pincode}<br/>
-        Phone: ${invoice.phone} | Email: ${invoice.email}<br/>
-        GSTIN: ${invoice.gst_number}</p>
-        <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
-          <thead>
-            <tr style="background: #f2f2f2;">
-              <th style="border: 1px solid #ddd; padding: 8px;">Product</th>
-              <th style="border: 1px solid #ddd; padding: 8px;">Description</th>
-              <th style="border: 1px solid #ddd; padding: 8px;">Qty</th>
-              <th style="border: 1px solid #ddd; padding: 8px;">Unit Price</th>
-              <th style="border: 1px solid #ddd; padding: 8px;">Line Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemResults.map(item => `
-              <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;">${item.product_name}</td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${item.description || ""}</td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${item.quantity}</td>
-                <td style="border: 1px solid #ddd; padding: 8px;">₹${item.unit_price.toFixed(2)}</td>
-                <td style="border: 1px solid #ddd; padding: 8px;">₹${item.line_total.toFixed(2)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-        <div style="text-align: right; margin-top: 20px;">
-          <p>Subtotal: ₹${invoice.subtotal.toFixed(2)}</p>
-          <p>Discount: ₹${invoice.discount_amount.toFixed(2)}</p>
-          <p><strong>Total: ₹${invoice.total_amount.toFixed(2)}</strong></p>
-        </div>
-        <p><strong>Notes:</strong> ${invoice.notes || ""}</p>
-      </div>
-    `;
+    const company = {
+      name: 'Sai Connect',
+      address: 'No.3, 3rd Street, Sundaram Colony, West Tambaram, Chennai 600045',
+      phone: '+91-9791119969',
+      email: 'a.vinothini@gmail.com',
+      gst: '',
+      logo: '/static/logo.png'
+    };
 
-    // Convert HTML to PDF
+    const items: InvoiceTemplateItem[] = itemResults.map((item: any) => ({
+      productName: item.product_name || '',
+      description: item.description || item.product_description || '',
+      quantity: Number(item.quantity) || 0,
+      unitPrice: Number(item.unit_price) || 0,
+      lineTotal: Number(item.line_total) || 0
+    }));
+
+    const html = buildInvoiceHtml(invoice, items, company, { showPrintButton: false, isPdf: true, includeLogo: false });
+
+    if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
+      console.warn('html2pdf binding not available for invoice download');
+      return c.json({ error: 'PDF generator unavailable' }, 501);
+    }
+
     const pdfBuffer = await c.html2pdf.convert(html);
 
-    // Return PDF as download
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      console.error('PDF conversion returned empty buffer', { invoiceId: id });
+      return c.json({ error: 'Failed to render invoice PDF' }, 500);
+    }
+
     c.res.setHeader('Content-Type', 'application/pdf');
-    c.res.setHeader('Content-Disposition', `attachment; filename="invoice_${id}.pdf"`);
+    c.res.setHeader('Content-Disposition', `attachment; filename="invoice_${invoice.invoice_number}.pdf"`);
     c.res.setHeader('Content-Length', pdfBuffer.length);
     c.res.end(pdfBuffer);
 

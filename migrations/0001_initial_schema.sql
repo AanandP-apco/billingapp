@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS invoices (
     due_date DATE,
     subtotal REAL NOT NULL DEFAULT 0,
     discount_amount REAL DEFAULT 0,
+    discount_type TEXT DEFAULT none,
+    discount_value REAL DEFAULT 0,
     total_amount REAL NOT NULL DEFAULT 0,
     paid_amount REAL DEFAULT 0,
     balance_amount REAL DEFAULT 0,

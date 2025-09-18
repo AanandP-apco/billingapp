@@ -627,20 +627,21 @@ class BillingApp {
         `;
     }
 
+    
     showNewInvoice() {
         document.getElementById('content').innerHTML = `
             <div class="mb-6">
                 <h2 class="text-2xl font-bold text-gray-800 mb-4">
                     <i class="fas fa-plus mr-2"></i>Create New Invoice
                 </h2>
-                
+
                 <form onsubmit="app.saveInvoice(event)" class="bg-white p-6 rounded-lg shadow-md">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Customer *</label>
                             <select name="customer_id" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 <option value="">Select Customer</option>
-                                ${this.customers.map(customer => 
+                                ${this.customers.map(customer =>
                                     `<option value="${customer.id}">${customer.name}${customer.business_name ? ' - ' + customer.business_name : ''}</option>`
                                 ).join('')}
                             </select>
@@ -650,7 +651,7 @@ class BillingApp {
                             <input type="date" name="invoice_date" value="${new Date().toISOString().split('T')[0]}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
                         </div>
                     </div>
-                    
+
                     <div class="mb-6">
                         <h3 class="text-lg font-semibold mb-3">Invoice Items</h3>
                         <div id="invoice-items">
@@ -658,8 +659,8 @@ class BillingApp {
                                 <div class="col-span-5">
                                     <select name="product_id" required onchange="app.updateProductPrice(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
                                         <option value="">Select Product</option>
-                                        ${this.products.map(product => 
-                                            `<option value="${product.id}" data-price="${product.unit_price}">${product.name} - ₹${product.unit_price}</option>`
+                                        ${this.products.map(product =>
+                                            `<option value="${product.id}" data-price="${product.unit_price}">${product.name} - &#8377;${product.unit_price}</option>`
                                         ).join('')}
                                     </select>
                                 </div>
@@ -683,14 +684,44 @@ class BillingApp {
                             <i class="fas fa-plus mr-1"></i>Add Item
                         </button>
                     </div>
-                    
-                    <div class="border-t pt-4">
-                        <div class="flex justify-between items-center text-lg font-semibold">
-                            <span>Total Amount:</span>
-                            <span id="invoice-total">₹0.00</span>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Discount Type</label>
+                            <select name="discount_type" onchange="app.onDiscountTypeChange(this)" class="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="none" selected>No Discount</option>
+                                <option value="amount">Flat Amount</option>
+                                <option value="percent">Percentage</option>
+                            </select>
+                        </div>
+                        <div class="md:col-span-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Discount Value</label>
+                            <div class="flex items-center gap-2">
+                                <input type="number" name="discount_value" min="0" step="0.01" placeholder="Enter amount" class="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 opacity-50" disabled oninput="app.calculateInvoiceTotal()">
+                                <span data-discount-suffix class="text-gray-600 font-medium">&#8377;</span>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Select percentage for a % based discount or flat amount for a fixed reduction.</p>
                         </div>
                     </div>
-                    
+                    <input type="hidden" name="subtotal" value="0">
+                    <input type="hidden" name="discount_amount" value="0">
+                    <input type="hidden" name="total_amount" value="0">
+
+                    <div class="border-t pt-4 space-y-1">
+                        <div class="flex justify-between items-center text-sm text-gray-700">
+                            <span>Subtotal:</span>
+                            <span id="invoice-subtotal">&#8377;0.00</span>
+                        </div>
+                        <div id="invoice-discount-row" class="flex justify-between items-center text-sm text-emerald-700 hidden">
+                            <span id="invoice-discount-label">Discount</span>
+                            <span id="invoice-discount">-&#8377;0.00</span>
+                        </div>
+                        <div class="flex justify-between items-center text-lg font-semibold">
+                            <span>Total Amount:</span>
+                            <span id="invoice-total">&#8377;0.00</span>
+                        </div>
+                    </div>
+
                     <div class="flex justify-end mt-6 space-x-3">
                         <button type="button" onclick="app.showInvoices()" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
                             Cancel
@@ -702,6 +733,12 @@ class BillingApp {
                 </form>
             </div>
         `;
+        const discountTypeSelect = document.querySelector('select[name="discount_type"]');
+        if (discountTypeSelect) {
+            this.onDiscountTypeChange(discountTypeSelect);
+        } else {
+            this.calculateInvoiceTotal();
+        }
     }
 
     updateProductPrice(select) {
@@ -725,13 +762,113 @@ class BillingApp {
         this.calculateInvoiceTotal();
     }
 
+
+    computeDiscount(subtotal, type, rawValue) {
+        const normalizedSubtotal = Math.max(0, Number(subtotal) || 0);
+        const normalizedType = (type || 'none').toString().toLowerCase();
+        const discountType = normalizedType === 'percent' ? 'percent' : normalizedType === 'amount' ? 'amount' : 'none';
+        let value = Number(rawValue ?? 0);
+        if (!Number.isFinite(value)) {
+            value = 0;
+        }
+        let discountAmount = 0;
+        if (discountType === 'percent') {
+            value = Math.min(Math.max(value, 0), 100);
+            discountAmount = Number((normalizedSubtotal * value / 100).toFixed(2));
+        } else if (discountType === 'amount') {
+            value = Math.min(Math.max(value, 0), normalizedSubtotal);
+            discountAmount = Number(value.toFixed(2));
+        } else {
+            value = 0;
+        }
+        const total = Number((normalizedSubtotal - discountAmount).toFixed(2));
+        return { discountAmount, discountType, discountValue: value, total };
+    }
+
+    onDiscountTypeChange(select) {
+        const type = select?.value || 'none';
+        const valueInput = document.querySelector('input[name="discount_value"]');
+        const suffix = document.querySelector('[data-discount-suffix]');
+        if (valueInput) {
+            valueInput.disabled = type === 'none';
+            valueInput.classList.toggle('opacity-50', type === 'none');
+            if (type === 'percent') {
+                valueInput.placeholder = 'Enter percent';
+                valueInput.step = '0.01';
+                valueInput.min = '0';
+                valueInput.max = '100';
+            } else if (type === 'amount') {
+                valueInput.placeholder = 'Enter amount';
+                valueInput.step = '0.01';
+                valueInput.min = '0';
+                valueInput.removeAttribute('max');
+            } else {
+                valueInput.placeholder = 'Enter amount';
+                valueInput.value = '';
+            }
+        }
+        if (suffix) {
+            suffix.textContent = type === 'percent' ? '%' : '\u20B9';
+        }
+        this.calculateInvoiceTotal();
+    }
+
     calculateInvoiceTotal() {
         const lineTotals = document.querySelectorAll('input[name="line_total"]');
-        let total = 0;
+        let subtotal = 0;
         lineTotals.forEach(input => {
-            total += parseFloat(input.value) || 0;
+            subtotal += parseFloat(input.value) || 0;
         });
-        document.getElementById('invoice-total').textContent = `₹${total.toFixed(2)}`;
+        const typeField = document.querySelector('select[name="discount_type"]');
+        const valueField = document.querySelector('input[name="discount_value"]');
+        const discountType = typeField ? typeField.value : 'none';
+        const rawValue = valueField ? valueField.value : 0;
+        const { discountAmount, discountType: normalizedType, discountValue, total } = this.computeDiscount(subtotal, discountType, rawValue);
+        if (valueField && normalizedType === 'none') {
+            valueField.value = '';
+        } else if (valueField) {
+            valueField.value = discountValue.toFixed(2);
+        }
+        const subtotalEl = document.getElementById('invoice-subtotal');
+        if (subtotalEl) {
+            subtotalEl.textContent = `\u20B9${subtotal.toFixed(2)}`;
+        }
+        const discountRow = document.getElementById('invoice-discount-row');
+        const discountEl = document.getElementById('invoice-discount');
+        const discountLabelEl = document.getElementById('invoice-discount-label');
+        const showDiscount = normalizedType !== 'none' && discountAmount > 0;
+        if (discountRow) {
+            discountRow.classList.toggle('hidden', !showDiscount);
+        }
+        if (discountEl) {
+            discountEl.textContent = `-\u20B9${discountAmount.toFixed(2)}`;
+        }
+        if (discountLabelEl) {
+            if (normalizedType === 'percent' && discountAmount > 0) {
+                discountLabelEl.textContent = `Discount (${discountValue.toFixed(2)}%)`;
+            } else {
+                discountLabelEl.textContent = 'Discount';
+            }
+        }
+        const totalEl = document.getElementById('invoice-total');
+        if (totalEl) {
+            totalEl.textContent = `\u20B9${total.toFixed(2)}`;
+        }
+        const hiddenDiscount = document.querySelector('input[name="discount_amount"]');
+        if (hiddenDiscount) {
+            hiddenDiscount.value = discountAmount.toFixed(2);
+        }
+        const hiddenSubtotal = document.querySelector('input[name="subtotal"]');
+        if (hiddenSubtotal) {
+            hiddenSubtotal.value = subtotal.toFixed(2);
+        }
+        const hiddenTotal = document.querySelector('input[name="total_amount"]');
+        if (hiddenTotal) {
+            hiddenTotal.value = total.toFixed(2);
+        }
+        if (typeField) {
+            typeField.value = normalizedType;
+        }
     }
 
     addInvoiceItem() {
@@ -742,8 +879,8 @@ class BillingApp {
             <div class="col-span-5">
                 <select name="product_id" required onchange="app.updateProductPrice(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
                     <option value="">Select Product</option>
-                    ${this.products.map(product => 
-                        `<option value="${product.id}" data-price="${product.unit_price}">${product.name} - ₹${product.unit_price}</option>`
+                    ${this.products.map(product =>
+                        `<option value="${product.id}" data-price="${product.unit_price}">${product.name} - &#8377;${product.unit_price}</option>`
                     ).join('')}
                 </select>
             </div>
@@ -763,6 +900,7 @@ class BillingApp {
             </div>
         `;
         container.appendChild(newItem);
+        this.calculateInvoiceTotal();
     }
 
     removeInvoiceItem(button) {
@@ -834,11 +972,18 @@ class BillingApp {
 
         const subtotal = items.reduce((sum, item) => sum + item.line_total, 0);
         
+        const discountType = (formData.get('discount_type') || 'none').toString();
+        const discountValueRaw = parseFloat(formData.get('discount_value')) || 0;
+        const { discountAmount, discountType: normalizedType, discountValue, total } = this.computeDiscount(subtotal, discountType, discountValueRaw);
+
         const invoice = {
             customer_id: parseInt(formData.get('customer_id')),
             invoice_date: formData.get('invoice_date'),
             subtotal,
-            total_amount: subtotal,
+            discount_type: normalizedType,
+            discount_value: discountValue,
+            discount_amount: discountAmount,
+            total_amount: total,
             items
         };
         
@@ -929,8 +1074,17 @@ class BillingApp {
                                 </tbody>
                                 <tfoot class="bg-gray-50">
                                     <tr>
+                                        <td colspan="3" class="border border-gray-300 px-4 py-2 text-right font-semibold">Subtotal:</td>
+                                        <td class="border border-gray-300 px-4 py-2 text-right font-semibold">&#8377;${Number(invoice.subtotal || 0).toFixed(2)}</td>
+                                    </tr>
+                                    ${Number(invoice.discount_amount || 0) > 0 ? `
+                                    <tr>
+                                        <td colspan="3" class="border border-gray-300 px-4 py-2 text-right font-semibold">${invoice.discount_type === 'percent' ? `Discount (${Number(invoice.discount_value || 0).toFixed(2)}%)` : 'Discount'}</td>
+                                        <td class="border border-gray-300 px-4 py-2 text-right font-semibold">-&#8377;${Number(invoice.discount_amount || 0).toFixed(2)}</td>
+                                    </tr>` : ''}
+                                    <tr>
                                         <td colspan="3" class="border border-gray-300 px-4 py-2 text-right font-semibold">Total Amount:</td>
-                                        <td class="border border-gray-300 px-4 py-2 text-right font-semibold">₹${parseFloat(invoice.total_amount).toFixed(2)}</td>
+                                        <td class="border border-gray-300 px-4 py-2 text-right font-semibold">&#8377;${Number(invoice.total_amount || 0).toFixed(2)}</td>
                                     </tr>
                                 </tfoot>
                             </table>
@@ -950,78 +1104,122 @@ class BillingApp {
         }
     }
 
-    async editInvoice(id) {
-        try {
-            const { data: invoice } = await axios.get(`/api/invoices/${id}`);
-            // Build editable items list
-            const itemsHtml = invoice.items.map(item => `
-              <div class="invoice-item grid grid-cols-12 gap-2 mb-2">
-                <div class="col-span-5">
-                  <select name="product_id" required onchange="app.updateProductPrice(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                    <option value="">Select Product</option>
-                    ${this.products.map(p => `<option value="${p.id}" data-price="${p.unit_price}" ${p.id===item.product_id?'selected':''}>${p.name} - ₹${p.unit_price}</option>`).join('')}
+
+async editInvoice(id) {
+    try {
+        const { data: invoice } = await axios.get(`/api/invoices/${id}`);
+        const itemsHtml = invoice.items.map(item => `
+          <div class="invoice-item grid grid-cols-12 gap-2 mb-2">
+            <div class="col-span-5">
+              <select name="product_id" required onchange="app.updateProductPrice(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                <option value="">Select Product</option>
+                ${this.products.map(p => `<option value="${p.id}" data-price="${p.unit_price}" ${p.id===item.product_id?'selected':''}>${p.name} - &#8377;${p.unit_price}</option>`).join('')}
+              </select>
+            </div>
+            <div class="col-span-2">
+              <input type="number" name="quantity" placeholder="Qty" min="1" required value="${item.quantity}" onchange="app.calculateLineTotal(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+            </div>
+            <div class="col-span-2">
+              <input type="number" name="unit_price" placeholder="Price" step="0.01" required value="${item.unit_price}" onchange="app.calculateLineTotal(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+            </div>
+            <div class="col-span-2">
+              <input type="number" name="line_total" placeholder="Total" readonly value="${item.line_total}" class="w-full border border-gray-300 rounded px-2 py-1 text-sm bg-gray-50">
+            </div>
+            <div class="col-span-1">
+              <button type="button" onclick="app.removeInvoiceItem(this)" class="text-red-600 hover:text-red-800"><i class="fas fa-trash"></i></button>
+            </div>
+          </div>
+        `).join('');
+
+        document.getElementById('content').innerHTML = `
+          <div class="mb-6">
+            <div class="flex justify-between items-center mb-4">
+              <h2 class="text-2xl font-bold text-gray-800">
+                <i class="fas fa-pen-to-square mr-2"></i>Edit Invoice ${invoice.invoice_number}
+              </h2>
+            </div>
+            <form onsubmit="app.updateInvoice(event, ${id})" class="bg-white p-6 rounded-lg shadow-md">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Customer *</label>
+                  <select name="customer_id" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    ${this.customers.map(c => `<option value="${c.id}" ${c.id===invoice.customer_id?'selected':''}>${c.name}${c.business_name ? ' - ' + c.business_name : ''}</option>`).join('')}
                   </select>
                 </div>
-                <div class="col-span-2">
-                  <input type="number" name="quantity" placeholder="Qty" min="1" required value="${item.quantity}" onchange="app.calculateLineTotal(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                </div>
-                <div class="col-span-2">
-                  <input type="number" name="unit_price" placeholder="Price" step="0.01" required value="${item.unit_price}" onchange="app.calculateLineTotal(this)" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                </div>
-                <div class="col-span-2">
-                  <input type="number" name="line_total" placeholder="Total" readonly value="${item.line_total}" class="w-full border border-gray-300 rounded px-2 py-1 text-sm bg-gray-50">
-                </div>
-                <div class="col-span-1">
-                  <button type="button" onclick="app.removeInvoiceItem(this)" class="text-red-600 hover:text-red-800"><i class="fas fa-trash"></i></button>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Invoice Date *</label>
+                  <input type="date" name="invoice_date" value="${invoice.invoice_date}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
               </div>
-            `).join('');
-
-            document.getElementById('content').innerHTML = `
               <div class="mb-6">
-                <div class="flex justify-between items-center mb-4">
-                  <h2 class="text-2xl font-bold text-gray-800">
-                    <i class="fas fa-pen-to-square mr-2"></i>Edit Invoice ${invoice.invoice_number}
-                  </h2>
-                </div>
-                <form onsubmit="app.updateInvoice(event, ${id})" class="bg-white p-6 rounded-lg shadow-md">
-                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div>
-                      <label class="block text-sm font-medium text-gray-700 mb-2">Customer *</label>
-                      <select name="customer_id" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        ${this.customers.map(c => `<option value="${c.id}" ${c.id===invoice.customer_id?'selected':''}>${c.name}${c.business_name ? ' - ' + c.business_name : ''}</option>`).join('')}
-                      </select>
-                    </div>
-                    <div>
-                      <label class="block text-sm font-medium text-gray-700 mb-2">Invoice Date *</label>
-                      <input type="date" name="invoice_date" value="${invoice.invoice_date}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    </div>
-                  </div>
-                  <div class="mb-6">
-                    <h3 class="text-lg font-semibold mb-3">Invoice Items</h3>
-                    <div id="invoice-items">${itemsHtml}</div>
-                    <button type="button" onclick="app.addInvoiceItem()" class="text-blue-600 hover:text-blue-800 text-sm"><i class="fas fa-plus mr-1"></i>Add Item</button>
-                  </div>
-                  <div class="border-t pt-4">
-                    <div class="flex justify-between items-center text-lg font-semibold">
-                      <span>Total Amount:</span>
-                      <span id="invoice-total">₹${parseFloat(invoice.total_amount).toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <div class="flex justify-end mt-6 space-x-3">
-                    <button type="button" onclick="app.viewInvoice(${id})" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
-                    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Update Invoice</button>
-                  </div>
-                </form>
+                <h3 class="text-lg font-semibold mb-3">Invoice Items</h3>
+                <div id="invoice-items">${itemsHtml}</div>
+                <button type="button" onclick="app.addInvoiceItem()" class="text-blue-600 hover:text-blue-800 text-sm"><i class="fas fa-plus mr-1"></i>Add Item</button>
               </div>
-            `;
-          } catch (e) {
-            console.error('Error loading invoice for edit:', e);
-            this.showError('Failed to load invoice');
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Discount Type</label>
+                  <select name="discount_type" onchange="app.onDiscountTypeChange(this)" class="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="none" ${!invoice.discount_type || invoice.discount_type === 'none' ? 'selected' : ''}>No Discount</option>
+                    <option value="amount" ${invoice.discount_type === 'amount' ? 'selected' : ''}>Flat Amount</option>
+                    <option value="percent" ${invoice.discount_type === 'percent' ? 'selected' : ''}>Percentage</option>
+                  </select>
+                </div>
+                <div class="md:col-span-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Discount Value</label>
+                  <div class="flex items-center gap-2">
+                    <input type="number" name="discount_value" min="0" step="0.01" placeholder="Enter amount" class="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${invoice.discount_type && invoice.discount_type !== 'none' ? '' : 'opacity-50'}" ${invoice.discount_type && invoice.discount_type !== 'none' ? '' : 'disabled'} value="${invoice.discount_type && invoice.discount_type !== 'none' ? Number(invoice.discount_value || 0).toFixed(2) : ''}" oninput="app.calculateInvoiceTotal()">
+                    <span data-discount-suffix class="text-gray-600 font-medium">&#8377;</span>
+                  </div>
+                  <p class="text-xs text-gray-500 mt-1">Select percentage for a % based discount or flat amount for a fixed reduction.</p>
+                </div>
+              </div>
+              <input type="hidden" name="subtotal" value="${Number(invoice.subtotal || 0).toFixed(2)}">
+              <input type="hidden" name="discount_amount" value="${Number(invoice.discount_amount || 0).toFixed(2)}">
+              <input type="hidden" name="total_amount" value="${Number(invoice.total_amount || 0).toFixed(2)}">
+              <div class="border-t pt-4 space-y-1">
+                <div class="flex justify-between items-center text-sm text-gray-700">
+                  <span>Subtotal:</span>
+                  <span id="invoice-subtotal">&#8377;${Number(invoice.subtotal || 0).toFixed(2)}</span>
+                </div>
+                <div id="invoice-discount-row" class="flex justify-between items-center text-sm text-emerald-700 ${Number(invoice.discount_amount || 0) > 0 ? '' : 'hidden'}">
+                  <span id="invoice-discount-label">${invoice.discount_type === 'percent' && Number(invoice.discount_amount || 0) > 0 ? `Discount (${Number(invoice.discount_value || 0).toFixed(2)}%)` : 'Discount'}</span>
+                  <span id="invoice-discount">-&#8377;${Number(invoice.discount_amount || 0).toFixed(2)}</span>
+                </div>
+                <div class="flex justify-between items-center text-lg font-semibold">
+                  <span>Total Amount:</span>
+                  <span id="invoice-total">&#8377;${Number(invoice.total_amount || 0).toFixed(2)}</span>
+                </div>
+              </div>
+              <div class="flex justify-end mt-6 space-x-3">
+                <button type="button" onclick="app.viewInvoice(${id})" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Update Invoice</button>
+              </div>
+            </form>
+          </div>
+        `;
+        const discountTypeSelect = document.querySelector('select[name="discount_type"]');
+        if (discountTypeSelect) {
+          discountTypeSelect.value = invoice.discount_type || 'none';
+          const discountValueInput = document.querySelector('input[name="discount_value"]');
+          if (discountValueInput) {
+            if (discountTypeSelect.value === 'none') {
+              discountValueInput.value = '';
+            } else {
+              discountValueInput.value = Number(invoice.discount_value || 0).toFixed(2);
+            }
           }
-    }
+          this.onDiscountTypeChange(discountTypeSelect);
+        }
+        this.calculateInvoiceTotal();
+      } catch (e) {
+        console.error('Error loading invoice for edit:', e);
+        this.showError('Failed to load invoice');
+      }
+}
 
-    async updateInvoice(event, id) {
+async updateInvoice(event, id) {
+(event, id) {
         event.preventDefault();
         const formData = new FormData(event.target);
         const items = [];
@@ -1035,13 +1233,17 @@ class BillingApp {
             }
         });
         const subtotal = items.reduce((s,i)=>s+i.line_total,0);
+        const discountType = (formData.get('discount_type') || 'none').toString();
+        const discountValueRaw = parseFloat(formData.get('discount_value')) || 0;
+        const { discountAmount, discountType: normalizedType, discountValue, total } = this.computeDiscount(subtotal, discountType, discountValueRaw);
         const payload = {
             customer_id: parseInt(formData.get('customer_id')),
             invoice_date: formData.get('invoice_date'),
             subtotal,
-            discount_amount: 0,
-            total_amount: subtotal,
-            balance_amount: subtotal, // paid updated when recording payments
+            discount_type: normalizedType,
+            discount_value: discountValue,
+            discount_amount: discountAmount,
+            total_amount: total,
             status: 'pending',
             items
         };
@@ -1142,11 +1344,50 @@ class BillingApp {
     }
 
     async downloadInvoicePDFById(id, invoiceNumber) {
-        try {
+        const filename = `invoice_${invoiceNumber || id}.pdf`;
+
+        const tryServerPdf = async () => {
+            try {
+                const res = await fetch(`/download/invoice/${id}`, {
+                    method: 'GET',
+                    headers: { Accept: 'application/pdf' },
+                    cache: 'no-store'
+                });
+
+                if (!res.ok) {
+                    console.warn('Server PDF download not available', res.status);
+                    return false;
+                }
+
+                const blob = await res.blob();
+                if (!blob || blob.size === 0) {
+                    console.warn('Server PDF download returned empty file');
+                    return false;
+                }
+
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+                return true;
+            } catch (error) {
+                console.warn('Server PDF download failed, will fallback to client render', error);
+                return false;
+            }
+        };
+
+        const fallbackClientPdf = async () => {
             const res = await fetch(`/print/invoice/${id}?embed=1`, { cache: 'no-store' });
+            if (!res.ok) {
+                throw new Error(`Failed to fetch invoice HTML for PDF fallback (status ${res.status})`);
+            }
+
             const html = await res.text();
             const iframe = document.createElement('iframe');
-            // Keep it off-screen but with a real layout size
             iframe.style.position = 'absolute';
             iframe.style.left = '-10000px';
             iframe.style.top = '0';
@@ -1154,32 +1395,51 @@ class BillingApp {
             iframe.style.minHeight = '297mm';
             iframe.style.border = '0';
             document.body.appendChild(iframe);
-            const doc = iframe.contentDocument || iframe.contentWindow.document;
-            doc.open();
-            doc.write(html);
-            doc.close();
-            // Wait for fonts and images to be ready
-            try { if (doc.fonts && doc.fonts.ready) { await doc.fonts.ready; } } catch {}
-            const images = Array.from(doc.images || []);
-            await Promise.all(images.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = res; })));
-            await new Promise(r => setTimeout(r, 200));
-            const target = doc.body;
-            const ww = Math.max(794, target.scrollWidth || 0); // ~A4 width in px @96dpi
-            await html2pdf()
-                .set({
-                    margin: 10,
-                    filename: `invoice_${invoiceNumber || id}.pdf`,
-                    image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: 0, windowWidth: ww },
-                    pagebreak: { mode: ['css', 'legacy', 'avoid-all'] },
-                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-                })
-                .from(target)
-                .save();
-            document.body.removeChild(iframe);
-        } catch (e) {
-            console.error('Error generating PDF from print HTML:', e);
-            this.showError('Failed to generate PDF');
+
+            try {
+                const doc = iframe.contentDocument || iframe.contentWindow.document;
+                doc.open();
+                doc.write(html);
+                doc.close();
+
+                try { if (doc.fonts && doc.fonts.ready) { await doc.fonts.ready; } } catch (_) {}
+
+                const images = Array.from(doc.images || []);
+                await Promise.all(images.map((img) => img.complete ? Promise.resolve() : new Promise((resolve) => {
+                    img.onload = img.onerror = resolve;
+                })));
+
+                await new Promise((resolve) => setTimeout(resolve, 200));
+
+                const target = doc.body;
+                const ww = Math.max(794, target.scrollWidth || 0);
+
+                await html2pdf()
+                    .set({
+                        margin: 10,
+                        filename,
+                        image: { type: 'jpeg', quality: 0.98 },
+                        html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: 0, windowWidth: ww },
+                        pagebreak: { mode: ['css', 'legacy', 'avoid-all'] },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    })
+                    .from(target)
+                    .save();
+            } finally {
+                document.body.removeChild(iframe);
+            }
+        };
+
+        try {
+            const serverSuccess = await tryServerPdf();
+            if (serverSuccess) {
+                return;
+            }
+
+            await fallbackClientPdf();
+        } catch (error) {
+            console.error('Error downloading invoice PDF:', error);
+            this.showError('Failed to download invoice PDF');
         }
     }
 

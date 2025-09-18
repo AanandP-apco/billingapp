@@ -22,8 +22,8 @@ INSERT OR IGNORE INTO products (name, description, category, size, color, materi
 ('Premium Cotton Gift Bag', 'Premium quality cotton gift bag with ribbon', 'Cotton Bag', 'Medium (14x16 inch)', 'Red', 'Premium Cotton', 90.00, 25, 5);
 
 -- Insert a sample invoice
-INSERT OR IGNORE INTO invoices (invoice_number, customer_id, invoice_date, due_date, subtotal, total_amount, status) VALUES
-('INV-2024-001', 1, '2024-09-15', '2024-10-15', 250.00, 250.00, 'pending');
+INSERT OR IGNORE INTO invoices (invoice_number, customer_id, invoice_date, due_date, subtotal, discount_type, discount_value, discount_amount, total_amount, status) VALUES
+('INV-2024-001', 1, '2024-09-15', '2024-10-15', 265.00, 'percent', 6, 15.00, 250.00, 'pending');
 
 -- Insert sample invoice items
 INSERT OR IGNORE INTO invoice_items (invoice_id, product_id, quantity, unit_price, line_total, description) VALUES
@@ -34,6 +34,9 @@ INSERT OR IGNORE INTO invoice_items (invoice_id, product_id, quantity, unit_pric
 -- Update the invoice totals (this would normally be done by application logic)
 UPDATE invoices SET 
     subtotal = (SELECT SUM(line_total) FROM invoice_items WHERE invoice_id = 1),
-    total_amount = (SELECT SUM(line_total) FROM invoice_items WHERE invoice_id = 1),
-    balance_amount = (SELECT SUM(line_total) FROM invoice_items WHERE invoice_id = 1)
+    discount_type = 'percent',
+    discount_value = 6,
+    discount_amount = 15.00,
+    total_amount = (SELECT SUM(line_total) FROM invoice_items WHERE invoice_id = 1) - 15.00,
+    balance_amount = (SELECT SUM(line_total) FROM invoice_items WHERE invoice_id = 1) - 15.00
 WHERE id = 1;
