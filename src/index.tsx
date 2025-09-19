@@ -52,6 +52,121 @@ function formatCurrency(value: number | string | null | undefined): string {
   return `&#8377;${numeric.toFixed(2)}`;
 }
 
+const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+function sanitizeDate(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  return isoDatePattern.test(value) ? value : null;
+}
+
+function formatCurrencyPlain(value: number | string | null | undefined): string {
+  const numeric = Number(value ?? 0);
+  return `INR ${numeric.toFixed(2)}`;
+}
+
+function formatDateLabel(value: string | null | undefined): string {
+  if (!value) {
+    return '';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function escapeHtml(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function toCsv(headers: string[], rows: Array<Array<string | number | null | undefined>>): string {
+  const escapeCell = (cell: string | number | null | undefined): string => {
+    if (cell === null || cell === undefined) {
+      return '';
+    }
+    const str = String(cell);
+    const needsQuotes = /[",\n]/.test(str);
+    const escaped = str.replace(/"/g, '""');
+    return needsQuotes ? `"${escaped}"` : escaped;
+  };
+
+  const lines = [
+    headers.map(escapeCell).join(','),
+    ...rows.map((row) => row.map(escapeCell).join(','))
+  ];
+
+  return lines.join('\n');
+}
+
+function buildSummaryCard(label: string, value: string): string {
+  return `
+    <div class="summary-card">
+      <div class="label">${escapeHtml(label)}</div>
+      <div class="value">${escapeHtml(value)}</div>
+    </div>
+  `;
+}
+
+function buildTableHtml(headers: string[], rows: string[][]): string {
+  const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('');
+  const body = rows.length
+    ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')
+    : `<tr><td colspan="${headers.length}" class="empty">No data available</td></tr>`;
+
+  return `
+    <table>
+      <thead><tr>${head}</tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
+function buildReportHtml(title: string, description: string, sections: string[]): string {
+  const generatedAt = new Date().toLocaleString('en-IN', { hour12: false });
+  const sectionsHtml = sections.join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 28px; color: #111827; background: #ffffff; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2 { font-size: 18px; margin: 24px 0 12px; color: #1d4ed8; }
+    p { margin: 6px 0; }
+    .lead { color: #4b5563; margin-bottom: 18px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 18px; }
+    th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; font-size: 13px; }
+    th { background-color: #1d4ed8; color: #ffffff; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .summary-card { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; background: #f9fafb; }
+    .summary-card .label { font-size: 11px; color: #6b7280; letter-spacing: 0.04em; text-transform: uppercase; }
+    .summary-card .value { font-size: 18px; font-weight: 600; margin-top: 4px; color: #111827; }
+    .footer { font-size: 12px; color: #6b7280; margin-top: 24px; }
+    .empty { text-align: center; padding: 18px; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>${escapeHtml(title)}</h1>
+    <p class="lead">${escapeHtml(description)}</p>
+  </header>
+  ${sectionsHtml}
+  <p class="footer">Generated on ${escapeHtml(generatedAt)}</p>
+</body>
+</html>`;
+}
 function numberToWordsIndian(amount: number): string {
   const numeric = Number.isFinite(amount) ? Number(amount) : 0;
   const safeAmount = Math.max(0, numeric);
@@ -822,6 +937,336 @@ app.get('/api/dashboard/stats', async (c) => {
   }
 });
 
+// Reporting API Routes
+app.get('/api/reports/customers', async (c) => {
+  const format = (c.req.query('format') || 'csv').toLowerCase();
+  if (!['csv', 'pdf'].includes(format)) {
+    return c.json({ error: 'Unsupported format. Use csv or pdf.' }, 400);
+  }
+
+  try {
+    const { results } = await c.env.DB.prepare(`
+      SELECT id, name, business_name, phone, email, city, state, gst_number, credit_limit, created_at
+      FROM customers
+      ORDER BY name COLLATE NOCASE
+    `).all();
+
+    if (format === 'pdf') {
+      if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
+        return c.json({ error: 'PDF generator unavailable' }, 501);
+      }
+
+      const rows = (results || []).map((customer: any, index: number) => [
+        String(index + 1),
+        customer.name || '',
+        customer.business_name || '',
+        customer.phone || '',
+        customer.email || '',
+        [customer.city, customer.state].filter(Boolean).join(', '),
+        customer.gst_number || '',
+        formatCurrencyPlain(customer.credit_limit),
+        formatDateLabel(customer.created_at)
+      ]);
+
+      const table = buildTableHtml(
+        ['#', 'Name', 'Business', 'Phone', 'Email', 'Location', 'GST', 'Credit Limit', 'Created'],
+        rows
+      );
+      const html = buildReportHtml(
+        'Customer Directory',
+        'A complete list of customers registered in the Sai Connect billing system.',
+        [`<section>${table}</section>`]
+      );
+      const pdfBuffer = await c.html2pdf.convert(html);
+
+      return new Response(pdfBuffer, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="customers_${new Date().toISOString().slice(0, 10)}.pdf"`
+        }
+      });
+    }
+
+    const csvRows = (results || []).map((customer: any) => [
+      customer.id,
+      customer.name || '',
+      customer.business_name || '',
+      customer.phone || '',
+      customer.email || '',
+      customer.city || '',
+      customer.state || '',
+      customer.gst_number || '',
+      formatCurrencyPlain(customer.credit_limit),
+      formatDateLabel(customer.created_at)
+    ]);
+
+    const csv = toCsv(
+      ['ID', 'Name', 'Business', 'Phone', 'Email', 'City', 'State', 'GST', 'Credit Limit', 'Created At'],
+      csvRows
+    );
+
+    return new Response(csv, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="customers_${new Date().toISOString().slice(0, 10)}.csv"`
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting customers report:', error);
+    return c.json({ error: 'Failed to export customers report' }, 500);
+  }
+});
+
+app.get('/api/reports/invoices', async (c) => {
+  const format = (c.req.query('format') || 'csv').toLowerCase();
+  if (!['csv', 'pdf'].includes(format)) {
+    return c.json({ error: 'Unsupported format. Use csv or pdf.' }, 400);
+  }
+
+  const start = sanitizeDate(c.req.query('start'));
+  const end = sanitizeDate(c.req.query('end'));
+  const statusQuery = (c.req.query('status') || '').toLowerCase();
+  const allowedStatuses = ['pending', 'paid', 'partial', 'overdue'];
+  const status = allowedStatuses.includes(statusQuery) ? statusQuery : null;
+
+  if (start && end && start > end) {
+    return c.json({ error: 'Invalid date range. Start cannot be after end.' }, 400);
+  }
+
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (start) {
+    clauses.push('i.invoice_date >= ?');
+    params.push(start);
+  }
+  if (end) {
+    clauses.push('i.invoice_date <= ?');
+    params.push(end);
+  }
+  if (status) {
+    clauses.push('i.status = ?');
+    params.push(status);
+  }
+  const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  try {
+    const query = `
+      SELECT
+        i.invoice_number,
+        i.invoice_date,
+        i.due_date,
+        i.total_amount,
+        i.paid_amount,
+        i.balance_amount,
+        i.discount_amount,
+        i.status,
+        c.name AS customer_name
+      FROM invoices i
+      LEFT JOIN customers c ON i.customer_id = c.id
+      ${whereSql}
+      ORDER BY i.invoice_date DESC, i.invoice_number DESC
+    `;
+    const { results } = await c.env.DB.prepare(query).bind(...params).all();
+    const invoiceCount = results?.length ?? 0;
+    const totalAmount = (results || []).reduce((acc: number, invoice: any) => acc + Number(invoice.total_amount ?? 0), 0);
+    const totalOutstanding = (results || []).reduce((acc: number, invoice: any) => acc + Number(invoice.balance_amount ?? 0), 0);
+    const totalDiscount = (results || []).reduce((acc: number, invoice: any) => acc + Number(invoice.discount_amount ?? 0), 0);
+
+    if (format === 'pdf') {
+      if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
+        return c.json({ error: 'PDF generator unavailable' }, 501);
+      }
+
+      const summaryCards = [
+        buildSummaryCard('Invoices', String(invoiceCount)),
+        buildSummaryCard('Billed Total', formatCurrencyPlain(totalAmount)),
+        buildSummaryCard('Outstanding', formatCurrencyPlain(totalOutstanding)),
+        buildSummaryCard('Discounts', formatCurrencyPlain(totalDiscount))
+      ].join('');
+
+      const rows = (results || []).map((invoice: any, index: number) => [
+        String(index + 1),
+        invoice.invoice_number ?? '',
+        formatDateLabel(invoice.invoice_date),
+        invoice.customer_name || '',
+        formatCurrencyPlain(invoice.total_amount),
+        formatCurrencyPlain(invoice.paid_amount),
+        formatCurrencyPlain(invoice.balance_amount),
+        (invoice.status || '').toUpperCase()
+      ]);
+
+      const descriptionParts: string[] = [];
+      if (start || end) {
+        descriptionParts.push(`Period: ${escapeHtml(start ?? 'beginning')} to ${escapeHtml(end ?? 'present')}`);
+      }
+      if (status) {
+        descriptionParts.push(`Status filter: ${status.toUpperCase()}`);
+      }
+      const description = descriptionParts.length ? descriptionParts.join(' • ') : 'All invoices currently on record.';
+
+      const summarySection = `<section><h2>Overview</h2><div class="summary-grid">${summaryCards}</div></section>`;
+      const tableSection = `<section><h2>Invoices</h2>${buildTableHtml(['#', 'Invoice', 'Date', 'Customer', 'Total', 'Paid', 'Balance', 'Status'], rows)}</section>`;
+      const html = buildReportHtml('Invoice Register', description, [summarySection, tableSection]);
+      const pdfBuffer = await c.html2pdf.convert(html);
+
+      return new Response(pdfBuffer, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="invoices_${new Date().toISOString().slice(0, 10)}.pdf"`
+        }
+      });
+    }
+
+    const csvRows = (results || []).map((invoice: any) => [
+      invoice.invoice_number ?? '',
+      invoice.customer_name || '',
+      formatDateLabel(invoice.invoice_date),
+      formatDateLabel(invoice.due_date),
+      formatCurrencyPlain(invoice.total_amount),
+      formatCurrencyPlain(invoice.paid_amount),
+      formatCurrencyPlain(invoice.balance_amount),
+      invoice.status || '',
+      formatCurrencyPlain(invoice.discount_amount)
+    ]);
+
+    const csv = toCsv(
+      ['Invoice', 'Customer', 'Invoice Date', 'Due Date', 'Total', 'Paid', 'Balance', 'Status', 'Discount'],
+      csvRows
+    );
+
+    return new Response(csv, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="invoices_${new Date().toISOString().slice(0, 10)}.csv"`
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting invoices report:', error);
+    return c.json({ error: 'Failed to export invoices report' }, 500);
+  }
+});
+
+app.get('/api/reports/sales', async (c) => {
+  const format = (c.req.query('format') || 'csv').toLowerCase();
+  if (!['csv', 'pdf'].includes(format)) {
+    return c.json({ error: 'Unsupported format. Use csv or pdf.' }, 400);
+  }
+
+  const start = sanitizeDate(c.req.query('start'));
+  const end = sanitizeDate(c.req.query('end'));
+
+  if (start && end && start > end) {
+    return c.json({ error: 'Invalid date range. Start cannot be after end.' }, 400);
+  }
+
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (start) {
+    clauses.push('i.invoice_date >= ?');
+    params.push(start);
+  }
+  if (end) {
+    clauses.push('i.invoice_date <= ?');
+    params.push(end);
+  }
+  const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  try {
+    const statsQuery = `
+      SELECT
+        COUNT(*) AS invoice_count,
+        SUM(i.subtotal) AS subtotal_sum,
+        SUM(i.discount_amount) AS discount_sum,
+        SUM(i.total_amount) AS revenue_sum,
+        SUM(i.paid_amount) AS paid_sum,
+        SUM(i.balance_amount) AS balance_sum
+      FROM invoices i
+      ${whereSql}
+    `;
+    const { results: statResults } = await c.env.DB.prepare(statsQuery).bind(...params).all();
+    const stats = statResults?.[0] || {};
+
+    const paymentsQuery = `
+      SELECT SUM(p.amount) AS payment_sum
+      FROM payments p
+      INNER JOIN invoices i ON i.id = p.invoice_id
+      ${whereSql}
+    `;
+    const { results: paymentResults } = await c.env.DB.prepare(paymentsQuery).bind(...params).all();
+    const paymentSum = Number(paymentResults?.[0]?.payment_sum ?? 0);
+
+    const topCustomersQuery = `
+      SELECT c.name AS customer_name, c.business_name, COUNT(i.id) AS invoice_count, SUM(i.total_amount) AS revenue_sum
+      FROM invoices i
+      LEFT JOIN customers c ON i.customer_id = c.id
+      ${whereSql}
+      GROUP BY i.customer_id
+      ORDER BY revenue_sum DESC
+      LIMIT 5
+    `;
+    const { results: topCustomers } = await c.env.DB.prepare(topCustomersQuery).bind(...params).all();
+
+    const summaryRows: Array<[string, string | number]> = [
+      ['Period Start', start ?? 'All time'],
+      ['Period End', end ?? 'Present'],
+      ['Invoices', Number(stats.invoice_count ?? 0)],
+      ['Subtotal', formatCurrencyPlain(stats.subtotal_sum)],
+      ['Discounts', formatCurrencyPlain(stats.discount_sum)],
+      ['Revenue', formatCurrencyPlain(stats.revenue_sum)],
+      ['Payments Collected', formatCurrencyPlain(paymentSum)],
+      ['Outstanding', formatCurrencyPlain(stats.balance_sum)]
+    ];
+
+    const topCustomerRows = (topCustomers || []).map((row: any) => [
+      row.customer_name || 'Unnamed',
+      row.business_name || '',
+      String(row.invoice_count ?? 0),
+      formatCurrencyPlain(row.revenue_sum)
+    ]);
+
+    if (format === 'pdf') {
+      if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
+        return c.json({ error: 'PDF generator unavailable' }, 501);
+      }
+
+      const summaryCards = [
+        buildSummaryCard('Invoices', String(summaryRows[2][1])),
+        buildSummaryCard('Revenue', formatCurrencyPlain(stats.revenue_sum)),
+        buildSummaryCard('Collected', formatCurrencyPlain(paymentSum)),
+        buildSummaryCard('Outstanding', formatCurrencyPlain(stats.balance_sum)),
+        buildSummaryCard('Discounts', formatCurrencyPlain(stats.discount_sum))
+      ].join('');
+
+      const summarySection = `<section><h2>Sales Summary</h2><p>Period: ${escapeHtml(start ?? 'All time')} to ${escapeHtml(end ?? 'Present')}</p><div class="summary-grid">${summaryCards}</div></section>`;
+      const topCustomersSection = `<section><h2>Top Customers</h2>${buildTableHtml(['Customer', 'Business', 'Invoices', 'Revenue'], topCustomerRows)}</section>`;
+      const html = buildReportHtml('Sales Summary', 'Aggregated sales performance for the selected period.', [summarySection, topCustomersSection]);
+      const pdfBuffer = await c.html2pdf.convert(html);
+
+      return new Response(pdfBuffer, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="sales_${new Date().toISOString().slice(0, 10)}.pdf"`
+        }
+      });
+    }
+
+    const csvSections = [
+      toCsv(['Metric', 'Value'], summaryRows),
+      toCsv(['Customer', 'Business', 'Invoices', 'Revenue'], topCustomerRows)
+    ];
+    const csv = csvSections.join('\n\n');
+
+    return new Response(csv, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="sales_${new Date().toISOString().slice(0, 10)}.csv"`
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting sales report:', error);
+    return c.json({ error: 'Failed to export sales report' }, 500);
+  }
+});
 // Main application route
 app.get('/', (c) => {
   return c.html(`
@@ -835,32 +1280,51 @@ app.get('/', (c) => {
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
         <link href="/static/style.css" rel="stylesheet">
     </head>
-    <body class="bg-gray-50">
-        <div id="app">
-            <nav class="bg-blue-600 text-white p-4 shadow-lg">
-                <div class="container mx-auto flex items-center justify-between">
-                    <h1 class="text-xl font-bold">
-                        <i class="fas fa-shopping-bag mr-2"></i>
-                        Sai Connect (Eco Bags) Billing System
-                    </h1>
-                    <div class="flex space-x-4">
-                        <button onclick="showDashboard()" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400">
-                            <i class="fas fa-home mr-1"></i> Dashboard
+    <body class="bg-gray-50 min-h-screen flex flex-col">
+        <div id="app" class="flex-1 flex flex-col">
+                        <nav class="bg-blue-600 text-white p-4 shadow-lg">
+                <div class="container mx-auto">
+                    <div class="flex items-center justify-between gap-4">
+                        <h1 class="text-xl font-bold flex-1">
+                            <i class="fas fa-shopping-bag mr-2"></i>
+                            Sai Connect (Eco Bags) Billing System
+                        </h1>
+                        <div class="hidden md:flex items-center space-x-3" id="desktop-nav">
+                            <button onclick="showDashboard()" data-view="dashboard" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-2">
+                                <i class="fas fa-home"></i><span>Dashboard</span>
+                            </button>
+                            <button onclick="showCustomers()" data-view="customers" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-2">
+                                <i class="fas fa-users"></i><span>Customers</span>
+                            </button>
+                            <button onclick="showProducts()" data-view="products" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-2">
+                                <i class="fas fa-box"></i><span>Products</span>
+                            </button>
+                            <button onclick="showInvoices()" data-view="invoices" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-2">
+                                <i class="fas fa-file-invoice"></i><span>Invoices</span>
+                            </button>
+                        </div>
+                        <button class="md:hidden inline-flex items-center justify-center w-11 h-11 rounded-md bg-blue-500 hover:bg-blue-400 focus:outline-none focus:ring-2 focus:ring-white" id="mobile-nav-toggle" type="button" aria-label="Toggle navigation">
+                            <i class="fas fa-bars text-lg"></i>
                         </button>
-                        <button onclick="showCustomers()" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400">
-                            <i class="fas fa-users mr-1"></i> Customers
+                    </div>
+                    <div id="mobile-nav" class="md:hidden hidden mt-4 space-y-2">
+                        <button onclick="showDashboard()" data-view="dashboard" class="nav-btn w-full px-4 py-3 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-3">
+                            <i class="fas fa-home"></i><span>Dashboard</span>
                         </button>
-                        <button onclick="showProducts()" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400">
-                            <i class="fas fa-box mr-1"></i> Products
+                        <button onclick="showCustomers()" data-view="customers" class="nav-btn w-full px-4 py-3 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-3">
+                            <i class="fas fa-users"></i><span>Customers</span>
                         </button>
-                        <button onclick="showInvoices()" class="nav-btn px-4 py-2 bg-blue-500 rounded hover:bg-blue-400">
-                            <i class="fas fa-file-invoice mr-1"></i> Invoices
+                        <button onclick="showProducts()" data-view="products" class="nav-btn w-full px-4 py-3 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-3">
+                            <i class="fas fa-box"></i><span>Products</span>
+                        </button>
+                        <button onclick="showInvoices()" data-view="invoices" class="nav-btn w-full px-4 py-3 bg-blue-500 rounded hover:bg-blue-400 flex items-center gap-3">
+                            <i class="fas fa-file-invoice"></i><span>Invoices</span>
                         </button>
                     </div>
                 </div>
             </nav>
 
-            <main class="container mx-auto p-6">
+            <main class="container mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
                 <div id="content">
                     <!-- Dynamic content will be loaded here -->
                     <div class="text-center py-20">
@@ -1002,3 +1466,12 @@ app.get('/download/invoice/:id', async (c) => {
 });
 
 export default app
+
+
+
+
+
+
+
+
+
