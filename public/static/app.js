@@ -1219,7 +1219,6 @@ async editInvoice(id) {
 }
 
 async updateInvoice(event, id) {
-(event, id) {
         event.preventDefault();
         const formData = new FormData(event.target);
         const items = [];
@@ -1493,3 +1492,4 @@ function showInvoices() {
 const app = new BillingApp();
 
 // The PDF download is triggered via app.downloadInvoicePDF()
+
