@@ -940,8 +940,8 @@ app.get('/api/dashboard/stats', async (c) => {
 // Reporting API Routes
 app.get('/api/reports/customers', async (c) => {
   const format = (c.req.query('format') || 'csv').toLowerCase();
-  if (!['csv', 'pdf'].includes(format)) {
-    return c.json({ error: 'Unsupported format. Use csv or pdf.' }, 400);
+  if (!['csv', 'pdf', 'json'].includes(format)) {
+    return c.json({ error: 'Unsupported format. Use csv, pdf, or json.' }, 400);
   }
 
   try {
@@ -950,6 +950,22 @@ app.get('/api/reports/customers', async (c) => {
       FROM customers
       ORDER BY name COLLATE NOCASE
     `).all();
+
+    if (format === 'json') {
+      const exportedAt = new Date().toISOString();
+      const jsonPayload = {
+        report: 'customers',
+        exported_at: exportedAt,
+        rows: results || []
+      };
+
+      return new Response(JSON.stringify(jsonPayload, null, 2), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="customers_${exportedAt.slice(0, 10)}.json"`
+        }
+      });
+    }
 
     if (format === 'pdf') {
       if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
@@ -1019,8 +1035,8 @@ app.get('/api/reports/customers', async (c) => {
 
 app.get('/api/reports/invoices', async (c) => {
   const format = (c.req.query('format') || 'csv').toLowerCase();
-  if (!['csv', 'pdf'].includes(format)) {
-    return c.json({ error: 'Unsupported format. Use csv or pdf.' }, 400);
+  if (!['csv', 'pdf', 'json'].includes(format)) {
+    return c.json({ error: 'Unsupported format. Use csv, pdf, or json.' }, 400);
   }
 
   const start = sanitizeDate(c.req.query('start'));
@@ -1071,6 +1087,29 @@ app.get('/api/reports/invoices', async (c) => {
     const totalAmount = (results || []).reduce((acc: number, invoice: any) => acc + Number(invoice.total_amount ?? 0), 0);
     const totalOutstanding = (results || []).reduce((acc: number, invoice: any) => acc + Number(invoice.balance_amount ?? 0), 0);
     const totalDiscount = (results || []).reduce((acc: number, invoice: any) => acc + Number(invoice.discount_amount ?? 0), 0);
+
+    if (format === 'json') {
+      const exportedAt = new Date().toISOString();
+      const jsonPayload = {
+        report: 'invoices',
+        exported_at: exportedAt,
+        filters: { start, end, status },
+        summary: {
+          invoiceCount,
+          totalAmount,
+          totalOutstanding,
+          totalDiscount
+        },
+        rows: results || []
+      };
+
+      return new Response(JSON.stringify(jsonPayload, null, 2), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="invoices_${exportedAt.slice(0, 10)}.json"`
+        }
+      });
+    }
 
     if (format === 'pdf') {
       if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
@@ -1148,8 +1187,8 @@ app.get('/api/reports/invoices', async (c) => {
 
 app.get('/api/reports/sales', async (c) => {
   const format = (c.req.query('format') || 'csv').toLowerCase();
-  if (!['csv', 'pdf'].includes(format)) {
-    return c.json({ error: 'Unsupported format. Use csv or pdf.' }, 400);
+  if (!['csv', 'pdf', 'json'].includes(format)) {
+    return c.json({ error: 'Unsupported format. Use csv, pdf, or json.' }, 400);
   }
 
   const start = sanitizeDate(c.req.query('start'));
@@ -1224,6 +1263,31 @@ app.get('/api/reports/sales', async (c) => {
       formatCurrencyPlain(row.revenue_sum)
     ]);
 
+    if (format === 'json') {
+      const exportedAt = new Date().toISOString();
+      const jsonPayload = {
+        report: 'sales',
+        exported_at: exportedAt,
+        filters: { start, end },
+        summary: {
+          invoiceCount: Number(stats.invoice_count ?? 0),
+          subtotal: Number(stats.subtotal_sum ?? 0),
+          discount: Number(stats.discount_sum ?? 0),
+          revenue: Number(stats.revenue_sum ?? 0),
+          paymentsCollected: paymentSum,
+          outstanding: Number(stats.balance_sum ?? 0)
+        },
+        topCustomers: topCustomers || []
+      };
+
+      return new Response(JSON.stringify(jsonPayload, null, 2), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="sales_${exportedAt.slice(0, 10)}.json"`
+        }
+      });
+    }
+
     if (format === 'pdf') {
       if (!c.html2pdf || typeof c.html2pdf.convert !== 'function') {
         return c.json({ error: 'PDF generator unavailable' }, 501);
@@ -1267,6 +1331,271 @@ app.get('/api/reports/sales', async (c) => {
     return c.json({ error: 'Failed to export sales report' }, 500);
   }
 });
+// Data backup API
+app.get('/api/data/export', async (c) => {
+  try {
+    const tables = [
+      { name: 'customers', orderBy: 'ORDER BY id' },
+      { name: 'products', orderBy: 'ORDER BY id' },
+      { name: 'invoices', orderBy: 'ORDER BY id' },
+      { name: 'invoice_items', orderBy: 'ORDER BY id' },
+      { name: 'payments', orderBy: 'ORDER BY id' }
+    ] as const;
+
+    const payload: Record<string, unknown> = {
+      version: 1,
+      exported_at: new Date().toISOString()
+    };
+
+    for (const table of tables) {
+      const { results } = await c.env.DB.prepare(`SELECT * FROM ${table.name} ${table.orderBy}`).all();
+      payload[table.name] = results || [];
+    }
+
+    return new Response(JSON.stringify(payload, null, 2), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="billing_backup_${new Date().toISOString().slice(0, 10)}.json"`
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting data backup:', error);
+    return c.json({ error: 'Failed to export data backup' }, 500);
+  }
+});
+
+app.post('/api/data/import', async (c) => {
+  try {
+    const body = await c.req.json();
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: 'Invalid JSON payload' }, 400);
+    }
+
+    const bodyData: any = body;
+    const replace = Boolean(bodyData?.replace ?? bodyData?.replaceExisting ?? false);
+
+    const customers: any[] = Array.isArray(bodyData?.customers) ? bodyData.customers : [];
+    const products: any[] = Array.isArray(bodyData?.products) ? bodyData.products : [];
+    const invoices: any[] = Array.isArray(bodyData?.invoices) ? bodyData.invoices : [];
+    const invoiceItems: any[] = Array.isArray(bodyData?.invoice_items) ? bodyData.invoice_items : [];
+    const payments: any[] = Array.isArray(bodyData?.payments) ? bodyData.payments : [];
+
+    const toInt = (value: any): number | null => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      return Math.trunc(num);
+    };
+    const toPositiveInt = (value: any): number | null => {
+      const num = toInt(value);
+      return num && num > 0 ? num : null;
+    };
+    const toNumber = (value: any, fallback = 0): number => {
+      const num = Number(value);
+      return Number.isFinite(num) ? Number(num.toFixed(2)) : fallback;
+    };
+    const toOptionalString = (value: any): string | null => {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+      return String(value);
+    };
+    const toRequiredString = (value: any, fallback = ''): string => {
+      const str = value === null || value === undefined ? fallback : String(value);
+      return str;
+    };
+    const toTimestamp = (value: any): string => {
+      if (!value) {
+        return new Date().toISOString();
+      }
+      return String(value);
+    };
+    const toFlag = (value: any, fallback = 1): number => {
+      if (value === null || value === undefined) {
+        return fallback ? 1 : 0;
+      }
+      if (typeof value === 'boolean') {
+        return value ? 1 : 0;
+      }
+      const num = Number(value);
+      if (!Number.isNaN(num)) {
+        return num > 0 ? 1 : 0;
+      }
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['0', 'false', 'no', 'inactive'].includes(normalized)) {
+          return 0;
+        }
+        if (['1', 'true', 'yes', 'active'].includes(normalized)) {
+          return 1;
+        }
+      }
+      return fallback ? 1 : 0;
+    };
+    const normalizeStatus = (value: any): string => {
+      const allowed = new Set(['pending', 'paid', 'partial', 'overdue']);
+      const normalized = String(value ?? 'pending').toLowerCase();
+      return allowed.has(normalized) ? normalized : 'pending';
+    };
+    const normalizeDiscountType = (value: any): string => {
+      const allowed = new Set(['none', 'amount', 'percent']);
+      const normalized = String(value ?? 'none').toLowerCase();
+      return allowed.has(normalized) ? normalized : 'none';
+    };
+    const normalizePaymentMethod = (value: any): string => {
+      const allowed = new Set(['cash', 'cheque', 'bank_transfer', 'upi', 'card']);
+      const normalized = String(value ?? 'cash').toLowerCase();
+      return allowed.has(normalized) ? normalized : 'cash';
+    };
+
+    await c.env.DB.prepare('BEGIN TRANSACTION').run();
+
+    if (replace) {
+      await c.env.DB.prepare('DELETE FROM payments').run();
+      await c.env.DB.prepare('DELETE FROM invoice_items').run();
+      await c.env.DB.prepare('DELETE FROM invoices').run();
+      await c.env.DB.prepare('DELETE FROM products').run();
+      await c.env.DB.prepare('DELETE FROM customers').run();
+    }
+
+    const counts = { customers: 0, products: 0, invoices: 0, invoice_items: 0, payments: 0 };
+    const skipped = { customers: 0, products: 0, invoices: 0, invoice_items: 0, payments: 0 };
+
+    for (const row of customers) {
+      const id = toPositiveInt(row?.id);
+      const name = toRequiredString(row?.name, '').trim();
+      if (!id || !name) {
+        skipped.customers += 1;
+        continue;
+      }
+      await c.env.DB.prepare(`INSERT OR REPLACE INTO customers (id, name, business_name, phone, email, address, city, state, pincode, gst_number, credit_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        id,
+        name,
+        toOptionalString(row?.business_name),
+        toOptionalString(row?.phone),
+        toOptionalString(row?.email),
+        toOptionalString(row?.address),
+        toOptionalString(row?.city),
+        toOptionalString(row?.state),
+        toOptionalString(row?.pincode),
+        toOptionalString(row?.gst_number),
+        toNumber(row?.credit_limit ?? 0),
+        toTimestamp(row?.created_at),
+        toTimestamp(row?.updated_at ?? row?.created_at)
+      ).run();
+      counts.customers += 1;
+    }
+
+    for (const row of products) {
+      const id = toPositiveInt(row?.id);
+      const name = toRequiredString(row?.name, '').trim();
+      if (!id || !name) {
+        skipped.products += 1;
+        continue;
+      }
+      await c.env.DB.prepare(`INSERT OR REPLACE INTO products (id, name, description, category, size, color, material, unit_price, stock_quantity, minimum_stock, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        id,
+        name,
+        toOptionalString(row?.description),
+        toOptionalString(row?.category) ?? 'Cotton Bag',
+        toOptionalString(row?.size),
+        toOptionalString(row?.color),
+        toOptionalString(row?.material) ?? 'Cotton',
+        toNumber(row?.unit_price ?? 0),
+        toInt(row?.stock_quantity) ?? 0,
+        toInt(row?.minimum_stock) ?? 0,
+        toFlag(row?.is_active, 1),
+        toTimestamp(row?.created_at),
+        toTimestamp(row?.updated_at ?? row?.created_at)
+      ).run();
+      counts.products += 1;
+    }
+
+    for (const row of invoices) {
+      const id = toPositiveInt(row?.id);
+      const customerId = toPositiveInt(row?.customer_id);
+      const invoiceNumber = toRequiredString(row?.invoice_number, '').trim();
+      if (!id || !customerId || !invoiceNumber) {
+        skipped.invoices += 1;
+        continue;
+      }
+      await c.env.DB.prepare(`INSERT OR REPLACE INTO invoices (id, invoice_number, customer_id, invoice_date, due_date, subtotal, discount_amount, discount_type, discount_value, total_amount, paid_amount, balance_amount, status, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        id,
+        invoiceNumber,
+        customerId,
+        toTimestamp(row?.invoice_date),
+        toOptionalString(row?.due_date),
+        toNumber(row?.subtotal ?? 0),
+        toNumber(row?.discount_amount ?? 0),
+        normalizeDiscountType(row?.discount_type),
+        toNumber(row?.discount_value ?? 0),
+        toNumber(row?.total_amount ?? 0),
+        toNumber(row?.paid_amount ?? 0),
+        toNumber(row?.balance_amount ?? 0),
+        normalizeStatus(row?.status),
+        toOptionalString(row?.notes),
+        toTimestamp(row?.created_at),
+        toTimestamp(row?.updated_at ?? row?.created_at)
+      ).run();
+      counts.invoices += 1;
+    }
+
+    for (const row of invoiceItems) {
+      const id = toPositiveInt(row?.id);
+      const invoiceId = toPositiveInt(row?.invoice_id);
+      const productId = toPositiveInt(row?.product_id);
+      if (!id || !invoiceId || !productId) {
+        skipped.invoice_items += 1;
+        continue;
+      }
+      await c.env.DB.prepare(`INSERT OR REPLACE INTO invoice_items (id, invoice_id, product_id, quantity, unit_price, line_total, description) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
+        id,
+        invoiceId,
+        productId,
+        toNumber(row?.quantity ?? 0),
+        toNumber(row?.unit_price ?? 0),
+        toNumber(row?.line_total ?? 0),
+        toOptionalString(row?.description)
+      ).run();
+      counts.invoice_items += 1;
+    }
+
+    for (const row of payments) {
+      const id = toPositiveInt(row?.id);
+      const invoiceId = toPositiveInt(row?.invoice_id);
+      const amount = toNumber(row?.amount ?? 0);
+      if (!id || !invoiceId || amount <= 0) {
+        skipped.payments += 1;
+        continue;
+      }
+      await c.env.DB.prepare(`INSERT OR REPLACE INTO payments (id, invoice_id, payment_date, amount, payment_method, reference_number, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        id,
+        invoiceId,
+        toTimestamp(row?.payment_date),
+        amount,
+        normalizePaymentMethod(row?.payment_method),
+        toOptionalString(row?.reference_number),
+        toOptionalString(row?.notes),
+        toTimestamp(row?.created_at)
+      ).run();
+      counts.payments += 1;
+    }
+
+    await c.env.DB.prepare('COMMIT').run();
+
+    return c.json({ message: 'Data imported successfully', replace, counts, skipped });
+  } catch (error) {
+    try {
+      await c.env.DB.prepare('ROLLBACK').run();
+    } catch (rollbackError) {
+      console.error('Error rolling back import transaction:', rollbackError);
+    }
+    console.error('Error importing data backup:', error);
+    return c.json({ error: 'Failed to import data backup' }, 500);
+  }
+});
+
 // Main application route
 app.get('/', (c) => {
   return c.html(`

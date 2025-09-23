@@ -305,8 +305,8 @@ class BillingApp {
             console.warn(`Unsupported report type: ${type}`);
             return;
         }
-        if (!['csv', 'pdf'].includes(normalizedFormat)) {
-            alert('Only CSV or PDF exports are available.');
+        if (!['csv', 'pdf', 'json'].includes(normalizedFormat)) {
+            alert('Only CSV, PDF, or JSON exports are available.');
             return;
         }
 
@@ -331,7 +331,7 @@ class BillingApp {
             }
 
             const blob = await response.blob();
-            const extension = normalizedFormat === 'pdf' ? 'pdf' : 'csv';
+            const extension = normalizedFormat === 'pdf' ? 'pdf' : normalizedFormat;
             const timestamp = new Date().toISOString().split('T')[0];
             const filename = `${normalizedType}_report_${timestamp}.${extension}`;
             const url = URL.createObjectURL(blob);
@@ -345,6 +345,124 @@ class BillingApp {
         } catch (error) {
             console.error(`Error exporting ${normalizedType} report:`, error);
             alert('Failed to download report. Please try again.');
+        }
+    }
+
+    async downloadDataBackup() {
+        this.closeQuickActions();
+        try {
+            const response = await fetch('/api/data/export');
+            if (!response.ok) {
+                console.error('Failed to export data backup:', response.status);
+                alert('Failed to download data backup. Please try again.');
+                return;
+            }
+            const blob = await response.blob();
+            const exportedAt = new Date().toISOString();
+            const filename = `billing_backup_${exportedAt.slice(0, 10)}.json`;
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            if (typeof this.showSuccess === 'function') {
+                this.showSuccess('JSON backup downloaded');
+            }
+        } catch (error) {
+            console.error('Error downloading data backup:', error);
+            alert('Failed to download data backup. Please try again.');
+        }
+    }
+
+    importDataBackup() {
+        this.closeQuickActions();
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'application/json';
+        input.style.display = 'none';
+
+        input.addEventListener('change', async () => {
+            try {
+                const file = input.files && input.files[0];
+                if (!file) {
+                    return;
+                }
+                const text = await file.text();
+                let payload;
+                try {
+                    payload = JSON.parse(text);
+                } catch (parseError) {
+                    console.error('Invalid JSON backup file:', parseError);
+                    alert('The selected file is not valid JSON.');
+                    return;
+                }
+                if (!payload || typeof payload !== 'object') {
+                    alert('The JSON file does not contain valid data.');
+                    return;
+                }
+                const replaceExisting = confirm('Replace existing records with data from this backup? Choose OK to replace everything, or Cancel to merge with existing data.');
+                const response = await fetch('/api/data/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...payload, replace: replaceExisting })
+                });
+                if (!response.ok) {
+                    let message = 'Failed to import data backup.';
+                    try {
+                        const errorBody = await response.json();
+                        if (errorBody && errorBody.error) {
+                            message = errorBody.error;
+                        }
+                    } catch (_) {
+                        // ignore parse errors
+                    }
+                    alert(message);
+                    return;
+                }
+                const result = await response.json();
+                console.info('Data import summary:', result);
+                if (typeof this.showSuccess === 'function') {
+                    this.showSuccess('Data import completed successfully');
+                }
+                await this.loadInitialData();
+                if (typeof this.refreshCurrentView === 'function') {
+                    await this.refreshCurrentView();
+                } else {
+                    await this.showDashboard();
+                }
+            } catch (error) {
+                console.error('Error importing data backup:', error);
+                alert('Failed to import data backup. Please try again.');
+            } finally {
+                input.value = '';
+                if (document.body.contains(input)) {
+                    document.body.removeChild(input);
+                }
+            }
+        }, { once: true });
+
+        document.body.appendChild(input);
+        input.click();
+    }
+
+    async refreshCurrentView() {
+        switch (this.currentView) {
+            case 'customers':
+                await this.showCustomers();
+                break;
+            case 'products':
+                await this.showProducts();
+                break;
+            case 'invoices':
+                await this.showInvoices();
+                break;
+            case 'dashboard':
+            default:
+                await this.showDashboard();
+                break;
         }
     }
 
@@ -384,6 +502,7 @@ class BillingApp {
                 <select name="format" class="form-input">
                   <option value="csv">CSV (spreadsheet)</option>
                   <option value="pdf">PDF</option>
+                  <option value="json">JSON (structured)</option>
                 </select>
               </div>
               <p class="text-xs text-gray-500">Leave the dates blank to export the entire sales history.</p>
@@ -642,7 +761,7 @@ class BillingApp {
                                 <div>
                                     <p class="text-gray-600 text-sm">Outstanding Amount</p>
                                     <p class="text-2xl font-bold text-red-600">&#8377;${outstanding.toFixed(2)}</p>
-                                    <p class="text-sm text-gray-500 mt-1">Collected &#8377;${totalRevenue.toFixed(2)}</p>
+                                    <p class="text-sm text-gray-500 mt-1">Billed &#8377;${totalRevenue.toFixed(2)}</p>
                                 </div>
                                 <i class="fas fa-rupee-sign text-red-500 text-2xl"></i>
                             </div>
@@ -703,6 +822,9 @@ class BillingApp {
                                         <button onclick="app.exportReport('customers','pdf')" class="inline-flex items-center gap-2 px-3 py-2 border border-blue-200 rounded-md text-blue-600 hover:bg-blue-50 text-sm font-medium">
                                             <i class="fas fa-file-pdf"></i> PDF
                                         </button>
+                                        <button onclick="app.exportReport('customers','json')" class="inline-flex items-center gap-2 px-3 py-2 border border-blue-200 rounded-md text-blue-600 hover:bg-blue-50 text-sm font-medium">
+                                            <i class="fas fa-file-code"></i> JSON
+                                        </button>
                                     </div>
                                 </div>
                                 <div>
@@ -714,6 +836,9 @@ class BillingApp {
                                         <button onclick="app.exportReport('invoices','pdf')" class="inline-flex items-center gap-2 px-3 py-2 border border-blue-200 rounded-md text-blue-600 hover:bg-blue-50 text-sm font-medium">
                                             <i class="fas fa-file-pdf"></i> PDF
                                         </button>
+                                        <button onclick="app.exportReport('invoices','json')" class="inline-flex items-center gap-2 px-3 py-2 border border-blue-200 rounded-md text-blue-600 hover:bg-blue-50 text-sm font-medium">
+                                            <i class="fas fa-file-code"></i> JSON
+                                        </button>
                                     </div>
                                 </div>
                                 <div>
@@ -723,7 +848,19 @@ class BillingApp {
                                             <i class="fas fa-chart-pie"></i> Choose Range
                                         </button>
                                     </div>
-                                    <p class="text-xs text-gray-500 mt-2">Pick a date range and export the sales performance as CSV or PDF.</p>
+                                    <p class="text-xs text-gray-500 mt-2">Pick a date range and export the sales performance as CSV, PDF, or JSON.</p>
+                                </div>
+                                <div>
+                                    <p class="text-sm font-medium text-gray-600 mb-2">Data Backup</p>
+                                    <div class="flex flex-wrap gap-2">
+                                        <button onclick="app.downloadDataBackup()" class="inline-flex items-center gap-2 px-3 py-2 border border-emerald-200 rounded-md text-emerald-600 hover:bg-emerald-50 text-sm font-medium">
+                                            <i class="fas fa-file-export"></i> Download JSON Backup
+                                        </button>
+                                        <button onclick="app.importDataBackup()" class="inline-flex items-center gap-2 px-3 py-2 border border-amber-200 rounded-md text-amber-600 hover:bg-amber-50 text-sm font-medium">
+                                            <i class="fas fa-file-import"></i> Import JSON Backup
+                                        </button>
+                                    </div>
+                                    <p class="text-xs text-gray-500 mt-2">Export all billing data as JSON or restore from a previous backup.</p>
                                 </div>
                             </div>
                         </div>
